@@ -1,5 +1,6 @@
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
+import { rotateLogIfOversize } from './log-rotate.js';
 import { sleep } from './sleep.js';
 
 /**
@@ -76,9 +77,11 @@ export interface SpawnKernelOptions {
 
 /**
  * Spawn `node server.js` detached, stdout/stderr appended to logPath.
- * Returns the child pid.
+ * Returns the child pid. The log is size-capped: rotated before open when it
+ * has grown past the cap (see log-rotate.ts).
  */
 export function spawnKernelDetached({ serverJs, cwd, env, logPath }: SpawnKernelOptions): number {
+  rotateLogIfOversize(logPath);
   const out = openSync(logPath, 'a');
   const child = spawn(process.execPath, [serverJs], {
     cwd,
@@ -108,6 +111,7 @@ export interface SpawnScribeOptions {
  * from spawnKernelDetached: the scribe has its own pid file and lifecycle.
  */
 export function spawnScribeDetached({ cliEntry, logPath }: SpawnScribeOptions): number {
+  rotateLogIfOversize(logPath);
   const out = openSync(logPath, 'a');
   const child = spawn(process.execPath, [cliEntry, 'watch'], {
     env: process.env,

@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { run as logs } from '../src/commands/logs.js';
 import { run as start } from '../src/commands/start.js';
@@ -73,8 +74,12 @@ describe('kernel lifecycle', () => {
   it('start → status → logs → stop runs the fixture kernel end to end', async () => {
     writeFixtureKernel(home);
     writeConfigWithPort(port);
+    // A healthy `start`ed system includes the scribe; status exits non-zero
+    // without it, so this test runs a stand-in scribe entry like the real one.
+    const scribeEntry = join(home, 'fixture-scribe.js');
+    writeFileSync(scribeEntry, 'setInterval(() => {}, 1000);\n', 'utf8');
 
-    expect(await start([], { healthTimeoutMs: 15_000, startScribe: false })).toBe(0);
+    expect(await start([], { healthTimeoutMs: 15_000, scribeEntry })).toBe(0);
     const pid = readPidFile(resolvePaths().pidPath);
     expect(pid).not.toBeNull();
     expect(isProcessAlive(pid!)).toBe(true);
@@ -96,6 +101,19 @@ describe('kernel lifecycle', () => {
     stdout = [];
     expect(await status([])).toBe(1);
     expect(stdout.join('\n')).toContain('not running');
+  });
+
+  it('status exits 1 when the kernel runs but the scribe is dead (worst subsystem)', async () => {
+    writeFixtureKernel(home);
+    writeConfigWithPort(port);
+
+    expect(await start([], { healthTimeoutMs: 15_000, startScribe: false })).toBe(0);
+    stdout = [];
+    expect(await status([])).toBe(1);
+    expect(stdout.join('\n')).toContain('Scribe:    not running');
+    expect(stderr.join('\n')).toContain('degraded');
+
+    expect(await stop([], { graceTimeoutMs: 5_000 })).toBe(0);
   });
 
   it('start removes a stale pid file and proceeds', async () => {

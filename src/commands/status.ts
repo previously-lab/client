@@ -19,8 +19,10 @@ function formatScribeSource(source: ScribeSource, status: ScribeStatus | null): 
 
 /**
  * `previously status` — report kernel liveness, port reachability, kernel
- * version/compatibility, and a config summary. Exit code 0 only when the
- * kernel is running AND reachable AND version-compatible.
+ * version/compatibility, bridge CLI presence, scribe health, and a config
+ * summary. Exit code reflects the worst subsystem honestly (§9): 0 only when
+ * the kernel is running AND reachable AND version-compatible AND the scribe
+ * is alive alongside it with no recorded errors.
  */
 export async function run(args: string[]): Promise<number> {
   void args;
@@ -79,5 +81,18 @@ export async function run(args: string[]): Promise<number> {
     return 1;
   }
 
-  return alive && reachable ? 0 : 1;
+  if (!(alive && reachable)) return 1;
+
+  // Kernel healthy; the scribe is part of a healthy `start`ed system (§2/§3):
+  // a dead scribe beside a live kernel, or recorded scribe errors, is a
+  // degraded system and must not report success.
+  if (!scribeAlive) {
+    console.error('Scribe is not running while the kernel is — degraded. Restart with `previously stop && previously start`.');
+    return 1;
+  }
+  if (scribeStatus !== null && scribeStatus.errors.length > 0) {
+    console.error(`Scribe has ${scribeStatus.errors.length} recorded error(s) — degraded. See \`previously logs\` and the status file.`);
+    return 1;
+  }
+  return 0;
 }

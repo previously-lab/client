@@ -187,8 +187,12 @@ describe('start/status with the kernel pointer', () => {
   it('start launches the kernel from the pointer dir; status reports version + compat', async () => {
     installFromDir({ fromDir: makeSourceDir(home, 'run'), version: '0.8.1' });
     writeConfigWithPort(port);
+    // status exits non-zero when the scribe is missing beside a live kernel;
+    // run a stand-in scribe entry so the full system is healthy.
+    const scribeEntry = join(home, 'fixture-scribe.js');
+    writeFileSync(scribeEntry, 'setInterval(() => {}, 1000);\n', 'utf8');
 
-    expect(await start([], { healthTimeoutMs: 15_000, startScribe: false })).toBe(0);
+    expect(await start([], { healthTimeoutMs: 15_000, scribeEntry })).toBe(0);
     const res = await fetch(`http://127.0.0.1:${port}/`);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain('fixture kernel');
