@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
+import * as bridgeExec from './commands/bridge-exec.js';
 import * as init from './commands/init.js';
 import * as install from './commands/install.js';
 import * as kernel from './commands/kernel.js';
@@ -26,6 +27,7 @@ const commands: Record<string, CommandHandler> = {
   watch: scribe.runWatch,
   install: install.run,
   uninstall: install.runUninstall,
+  'bridge-exec': bridgeExec.run,
 };
 
 function usage(): void {
@@ -46,6 +48,7 @@ Commands:
   scribe    Scribe one-shot scan: scribe once [--source claude-code|codex]
   install   Register the MCP server into agent configs (--claude / --codex / --kimi / --all)
   uninstall Remove the MCP server from agent configs
+  bridge-exec  Subscription bridge entry for the kernel delegateTask tool (JSON on stdin, result on stdout)
 
 Environment:
   PREVIOUSLY_HOME  Root for all state (default: ~/.previously)
