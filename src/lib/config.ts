@@ -13,7 +13,11 @@ export interface PreviouslyConfig {
   kernelDir?: string;
   port: number;
   hostname: string;
-  /** Execution backend selection (subscription bridge / API key). Unset in C1. */
+  /**
+   * Execution backend selection: a subscription bridge CLI (claude|codex|kimi,
+   * used as bridge-exec's default agent) or 'api-key' (kernel's own catalog).
+   * Set via `previously init --backend`; null means unset.
+   */
   executionBackend: string | null;
 }
 

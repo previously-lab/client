@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { BRIDGE_AGENTS, checkCliPresence } from '../bridge/index.js';
 import { loadConfig } from '../lib/config.js';
 import { isPortOpen } from '../lib/health.js';
 import { resolveKernel } from '../lib/kernel.js';
@@ -48,6 +49,12 @@ export async function run(args: string[]): Promise<number> {
   console.log(`Port:      ${config.hostname}:${config.port} ${reachable ? 'reachable' : 'unreachable'}`);
   console.log(`Storage:   ${config.storage} (memory root: ${config.memoryRoot})`);
   console.log(`Backend:   ${config.executionBackend ?? '(unset)'}`);
+  for (const agent of BRIDGE_AGENTS) {
+    const presence = checkCliPresence(agent);
+    console.log(
+      `  bridge ${agent}: ${presence.found ? `found (${presence.detail})` : `not found — ${presence.detail}`}`,
+    );
+  }
 
   const scribePid = readPidFile(paths.scribePidPath);
   const scribeAlive = scribePid !== null && isProcessAlive(scribePid);

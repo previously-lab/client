@@ -52,4 +52,24 @@ describe('init', () => {
     const after = JSON.parse(readFileSync(paths.configPath, 'utf8'));
     expect(after.port).toBe(3210);
   });
+
+  it('--backend sets executionBackend non-interactively', async () => {
+    home = useTempHome();
+    expect(await init(['--backend', 'claude'])).toBe(0);
+    const config = JSON.parse(readFileSync(resolvePaths().configPath, 'utf8'));
+    expect(config.executionBackend).toBe('claude');
+  });
+
+  it('--backend none stores an explicit unset', async () => {
+    home = useTempHome();
+    expect(await init(['--backend', 'none'])).toBe(0);
+    const config = JSON.parse(readFileSync(resolvePaths().configPath, 'utf8'));
+    expect(config.executionBackend).toBeNull();
+  });
+
+  it('--backend rejects unknown values without writing a config', async () => {
+    home = useTempHome();
+    expect(await init(['--backend', 'gemini'])).toBe(1);
+    expect(existsSync(resolvePaths().configPath)).toBe(false);
+  });
 });
