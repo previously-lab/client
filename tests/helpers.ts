@@ -18,7 +18,17 @@ export function useTempHome(): string {
 
 export function cleanupTempHome(dir: string): void {
   delete process.env.PREVIOUSLY_HOME;
-  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  // Windows releases file handles asynchronously after a kill, and antivirus
+  // scan-on-close can hold the just-written kernel.log well beyond any sane
+  // retry window. Retry generously, but never fail an otherwise-green test on
+  // a leftover temp dir — warn and leave it for the OS temp cleaner.
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 40, retryDelay: 250 });
+  } catch (err) {
+    console.warn(
+      `cleanupTempHome: could not remove ${dir} (${err instanceof Error ? err.message : err}); leaving it behind`,
+    );
+  }
 }
 
 /** A minimal stand-in for the real kernel standalone build: an HTTP server on PORT/HOSTNAME. */
@@ -37,6 +47,16 @@ export function writeFixtureKernel(home: string): void {
   const kernelDir = join(home, 'kernel');
   mkdirSync(kernelDir, { recursive: true });
   writeFileSync(join(kernelDir, 'server.js'), FIXTURE_KERNEL, 'utf8');
+}
+
+/**
+ * Write the fixture kernel as a standalone artifact into an arbitrary
+ * directory — input for `previously kernel install --from <dir>`.
+ */
+export function writeStandaloneFixture(dir: string): string {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'server.js'), FIXTURE_KERNEL, 'utf8');
+  return dir;
 }
 
 /** Write a config with the given port into the current PREVIOUSLY_HOME. */
