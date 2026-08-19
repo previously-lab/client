@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
 import * as init from './commands/init.js';
+import * as install from './commands/install.js';
 import * as kernel from './commands/kernel.js';
 import * as logs from './commands/logs.js';
+import * as mcp from './commands/mcp.js';
 import * as start from './commands/start.js';
 import * as status from './commands/status.js';
 import * as stop from './commands/stop.js';
@@ -18,6 +20,9 @@ const commands: Record<string, CommandHandler> = {
   logs: logs.run,
   kernel: kernel.run,
   upgrade: upgrade.run,
+  mcp: mcp.run,
+  install: install.run,
+  uninstall: install.runUninstall,
 };
 
 function usage(): void {
@@ -33,6 +38,9 @@ Commands:
   logs      Tail the kernel log (-n/--lines, default 100)
   kernel    Manage kernel versions (install / list / current / rollback)
   upgrade   Install the newest kernel release within the supported version line
+  mcp       Local read-only MCP server (serve over stdio)
+  install   Register the MCP server into agent configs (--claude / --codex / --kimi / --all)
+  uninstall Remove the MCP server from agent configs
 
 Environment:
   PREVIOUSLY_HOME  Root for all state (default: ~/.previously)
