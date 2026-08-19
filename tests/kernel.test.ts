@@ -45,7 +45,7 @@ describe('kernel lifecycle', () => {
 
   it('start fails honestly when the kernel artifact is missing', async () => {
     writeConfigWithPort(port);
-    const code = await start([], { healthTimeoutMs: 5_000 });
+    const code = await start([], { healthTimeoutMs: 5_000, startScribe: false });
     expect(code).toBe(1);
     const message = stderr.join('\n');
     expect(message).toContain('Kernel artifact not found');
@@ -61,7 +61,7 @@ describe('kernel lifecycle', () => {
     const blocker = http.createServer((_req, res) => res.end('busy'));
     await new Promise<void>((resolve) => blocker.listen(port, '127.0.0.1', resolve));
     try {
-      const code = await start([], { healthTimeoutMs: 5_000 });
+      const code = await start([], { healthTimeoutMs: 5_000, startScribe: false });
       expect(code).toBe(1);
       expect(stderr.join('\n')).toContain('already in use');
       expect(existsSync(resolvePaths().pidPath)).toBe(false);
@@ -74,7 +74,7 @@ describe('kernel lifecycle', () => {
     writeFixtureKernel(home);
     writeConfigWithPort(port);
 
-    expect(await start([], { healthTimeoutMs: 15_000 })).toBe(0);
+    expect(await start([], { healthTimeoutMs: 15_000, startScribe: false })).toBe(0);
     const pid = readPidFile(resolvePaths().pidPath);
     expect(pid).not.toBeNull();
     expect(isProcessAlive(pid!)).toBe(true);
@@ -103,7 +103,7 @@ describe('kernel lifecycle', () => {
     writeConfigWithPort(port);
     writePidFile(resolvePaths().pidPath, getDeadPid());
 
-    expect(await start([], { healthTimeoutMs: 15_000 })).toBe(0);
+    expect(await start([], { healthTimeoutMs: 15_000, startScribe: false })).toBe(0);
     const pid = readPidFile(resolvePaths().pidPath);
     expect(pid).not.toBeNull();
     expect(isProcessAlive(pid!)).toBe(true);
@@ -137,7 +137,7 @@ describe('kernel lifecycle', () => {
   it('logs tails the kernel log file', async () => {
     writeFixtureKernel(home);
     writeConfigWithPort(port);
-    expect(await start([], { healthTimeoutMs: 15_000 })).toBe(0);
+    expect(await start([], { healthTimeoutMs: 15_000, startScribe: false })).toBe(0);
     try {
       const out: string[] = [];
       vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
@@ -154,9 +154,9 @@ describe('kernel lifecycle', () => {
   it('second start while running refuses with exit 1', async () => {
     writeFixtureKernel(home);
     writeConfigWithPort(port);
-    expect(await start([], { healthTimeoutMs: 15_000 })).toBe(0);
+    expect(await start([], { healthTimeoutMs: 15_000, startScribe: false })).toBe(0);
     try {
-      expect(await start([], { healthTimeoutMs: 5_000 })).toBe(1);
+      expect(await start([], { healthTimeoutMs: 5_000, startScribe: false })).toBe(1);
       expect(stderr.join('\n')).toContain('already running');
     } finally {
       expect(await stop([], { graceTimeoutMs: 5_000 })).toBe(0);

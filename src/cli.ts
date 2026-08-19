@@ -5,6 +5,7 @@ import * as install from './commands/install.js';
 import * as kernel from './commands/kernel.js';
 import * as logs from './commands/logs.js';
 import * as mcp from './commands/mcp.js';
+import * as scribe from './commands/scribe.js';
 import * as start from './commands/start.js';
 import * as status from './commands/status.js';
 import * as stop from './commands/stop.js';
@@ -21,6 +22,8 @@ const commands: Record<string, CommandHandler> = {
   kernel: kernel.run,
   upgrade: upgrade.run,
   mcp: mcp.run,
+  scribe: scribe.runScribe,
+  watch: scribe.runWatch,
   install: install.run,
   uninstall: install.runUninstall,
 };
@@ -39,6 +42,8 @@ Commands:
   kernel    Manage kernel versions (install / list / current / rollback)
   upgrade   Install the newest kernel release within the supported version line
   mcp       Local read-only MCP server (serve over stdio)
+  watch     Run the scribe in the foreground (fs watch → time slices; start includes it)
+  scribe    Scribe one-shot scan: scribe once [--source claude-code|codex]
   install   Register the MCP server into agent configs (--claude / --codex / --kimi / --all)
   uninstall Remove the MCP server from agent configs
 

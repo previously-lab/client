@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { loadConfig } from '../lib/config.js';
 import { isPortOpen, waitForHealthy } from '../lib/health.js';
@@ -10,12 +11,17 @@ import {
   readPidFile,
   removePidFile,
   spawnKernelDetached,
+  spawnScribeDetached,
   writePidFile,
 } from '../lib/process.js';
 
 export interface StartOptions {
   /** Health-check timeout; defaults to PREVIOUSLY_HEALTH_TIMEOUT_MS env or 30s. */
   healthTimeoutMs?: number;
+  /** Auto-start the scribe alongside the kernel (default true; tests opt out). */
+  startScribe?: boolean;
+  /** Test hook: scribe entry script override (defaults to this build's cli.js). */
+  scribeEntry?: string;
 }
 
 /**
@@ -94,5 +100,26 @@ export async function run(args: string[], opts: StartOptions = {}): Promise<numb
 
   console.log(`Previously kernel is running at ${url} (pid ${pid})`);
   console.log(`Logs: ${paths.kernelLogPath}`);
+
+  // The scribe auto-starts as a second detached process (design doc §2/§3).
+  // Its failure must never block or roll back the kernel: warn and continue.
+  if (opts.startScribe ?? true) {
+    const scribePid = readPidFile(paths.scribePidPath);
+    if (scribePid !== null && isProcessAlive(scribePid)) {
+      console.log(`Scribe is already running (pid ${scribePid})`);
+    } else {
+      if (scribePid !== null) removePidFile(paths.scribePidPath);
+      try {
+        const entry = opts.scribeEntry ?? fileURLToPath(new URL('../cli.js', import.meta.url));
+        const scribePid2 = spawnScribeDetached({ cliEntry: entry, logPath: paths.scribeLogPath });
+        writePidFile(paths.scribePidPath, scribePid2);
+        console.log(`Scribe is running (pid ${scribePid2})`);
+        console.log(`Logs: ${paths.scribeLogPath}`);
+      } catch (err) {
+        console.error(`Warning: scribe failed to start (${err instanceof Error ? err.message : err}); the kernel is unaffected.`);
+        console.error('Run `previously watch` in the foreground to see the error, or retry with `previously start`.');
+      }
+    }
+  }
   return 0;
 }

@@ -188,7 +188,7 @@ describe('start/status with the kernel pointer', () => {
     installFromDir({ fromDir: makeSourceDir(home, 'run'), version: '0.8.1' });
     writeConfigWithPort(port);
 
-    expect(await start([], { healthTimeoutMs: 15_000 })).toBe(0);
+    expect(await start([], { healthTimeoutMs: 15_000, startScribe: false })).toBe(0);
     const res = await fetch(`http://127.0.0.1:${port}/`);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain('fixture kernel');
@@ -214,7 +214,7 @@ describe('start/status with the kernel pointer', () => {
     );
     writeConfigWithPort(port);
 
-    expect(await start([], { healthTimeoutMs: 5_000 })).toBe(1);
+    expect(await start([], { healthTimeoutMs: 5_000, startScribe: false })).toBe(1);
     const message = stderr.join('\n');
     expect(message).toContain('0.9.0');
     expect(message).toContain('npm i -g previously-client@latest');
