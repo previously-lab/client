@@ -83,3 +83,90 @@ export function getDeadPid(): number {
   if (res.pid === undefined) throw new Error('spawnSync did not return a pid');
   return res.pid;
 }
+
+/**
+ * Write a small but realistic episodic memory tree under <home>/memory,
+ * matching the agent repo's on-disk layout:
+ *   episodic/timeline.md, episodic/timeline/index.json, episodic/strands.json
+ *   episodic/slices/YYYY/MM/DD/HHMM/timeline/core.md (+ _index.json per month)
+ * Returns the memory root.
+ */
+export function writeFixtureMemory(home: string): string {
+  const memory = join(home, 'memory');
+  const sliceDir = join(memory, 'episodic', 'slices', '2026', '08', '10', '1401', 'timeline');
+  mkdirSync(sliceDir, { recursive: true });
+  writeFileSync(
+    join(sliceDir, 'core.md'),
+    [
+      '---',
+      'slice_id: 2026-08-10-1401',
+      'status: closed',
+      'tags: [面试, 自我进化]',
+      '---',
+      '## Turn a1b2c3 — 2026-08-10T14:01:00.000Z (user)',
+      '',
+      '帮我准备周五 Apex Intelligence 的面试',
+      '',
+      '## Turn d4e5f6 — 2026-08-10T14:01:30.000Z (agent)',
+      '',
+      '好的，我们先从自进化这个主题开始。',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  writeFileSync(
+    join(memory, 'episodic', 'slices', '2026', '08', '_index.json'),
+    JSON.stringify(
+      {
+        month: '2026-08',
+        slices: [
+          {
+            slice_id: '2026-08-10-1401',
+            summary: '面试准备：Apex Intelligence 自进化',
+            tags: ['面试', '自我进化'],
+          },
+        ],
+      },
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+  writeFileSync(
+    join(memory, 'episodic', 'timeline.md'),
+    [
+      '# Timeline',
+      '',
+      '## 2026-08',
+      '### 08-10',
+      '- **2026-08-10-1401** 面试准备：Apex Intelligence 自进化 · 2轮 [面试,自我进化]',
+      '### 08-09',
+      '- **2026-08-09-1546** 版本更新讨论 · 3轮 [项目开发]',
+      '',
+      '## 2026-07',
+      '### 07-28',
+      '- **2026-07-28-0658** 第一次见面 · 2轮',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  mkdirSync(join(memory, 'episodic', 'timeline'), { recursive: true });
+  writeFileSync(
+    join(memory, 'episodic', 'timeline', 'index.json'),
+    JSON.stringify({ _schema: 1, slice_count: 1, slices: [{ id: '2026-08-10-1401' }] }, null, 2) + '\n',
+    'utf8',
+  );
+  writeFileSync(
+    join(memory, 'episodic', 'strands.json'),
+    JSON.stringify(
+      {
+        面试准备: ['2026/08/10/1401'],
+        项目开发: ['2026/08/09/1546', '2026/08/10/1700'],
+      },
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+  return memory;
+}
