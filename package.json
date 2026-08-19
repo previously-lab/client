@@ -1,0 +1,27 @@
+{
+  "name": "previously-client",
+  "version": "0.1.0",
+  "description": "Previously local client: launches and manages the local Previously kernel instance.",
+  "type": "module",
+  "bin": {
+    "previously": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepare": "pnpm run build"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}

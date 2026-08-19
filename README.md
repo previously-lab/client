@@ -8,3 +8,27 @@ Previously 的本地客户端：同一内核的本地实例 + 本地感知末梢
 - 可复用本地已有的 Agent 订阅作为执行后端；~~通过 Connect 接受云端 Previously 的指挥~~（Connect 暂缓封存，见设计文档）
 
 设计文档见 [docs/design/v0.1-client.md](docs/design/v0.1-client.md)。
+
+## Development
+
+Requirements: Node.js ≥ 20, pnpm.
+
+```bash
+pnpm install   # install dependencies
+pnpm build     # compile TypeScript to dist/
+pnpm test      # run the vitest suite
+```
+
+Run the CLI from source (after `pnpm build`):
+
+```bash
+node dist/cli.js <command>
+```
+
+Point `PREVIOUSLY_HOME` at a scratch directory to avoid touching your real `~/.previously`:
+
+```bash
+PREVIOUSLY_HOME=/tmp/prev-test node dist/cli.js init
+```
+
+Current commands (batch C1): `init`, `start`, `stop`, `status`, `logs`. `start` requires the kernel standalone build (`server.js`, produced by the [agent repo](https://github.com/previously-lab/agent)) in `~/.previously/kernel/` — without it, `start` fails with an actionable error.
