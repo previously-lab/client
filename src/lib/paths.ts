@@ -22,6 +22,13 @@ export interface PreviouslyPaths {
   configPath: string;
   pidPath: string;
   kernelLogPath: string;
+  /** Scribe state root: cursors, per-session event state, status. */
+  scribeDir: string;
+  scribeCursorsPath: string;
+  scribeSessionsDir: string;
+  scribeStatusPath: string;
+  scribePidPath: string;
+  scribeLogPath: string;
 }
 
 export function resolvePaths(): PreviouslyPaths {
@@ -38,5 +45,11 @@ export function resolvePaths(): PreviouslyPaths {
     configPath: join(home, 'config.json'),
     pidPath: join(home, 'kernel.pid'),
     kernelLogPath: join(home, 'logs', 'kernel.log'),
+    scribeDir: join(home, 'scribe'),
+    scribeCursorsPath: join(home, 'scribe', 'cursors.json'),
+    scribeSessionsDir: join(home, 'scribe', 'sessions'),
+    scribeStatusPath: join(home, 'scribe', 'status.json'),
+    scribePidPath: join(home, 'scribe.pid'),
+    scribeLogPath: join(home, 'logs', 'scribe.log'),
   };
 }

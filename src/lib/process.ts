@@ -95,3 +95,30 @@ export function spawnKernelDetached({ serverJs, cwd, env, logPath }: SpawnKernel
   }
   return child.pid;
 }
+
+export interface SpawnScribeOptions {
+  /** Path to the CLI entry (dist/cli.js); the scribe runs `node cli.js watch`. */
+  cliEntry: string;
+  logPath: string;
+}
+
+/**
+ * Spawn the scribe as a second detached process (`node cli.js watch`),
+ * stdout/stderr appended to logPath. Returns the child pid. Kept separate
+ * from spawnKernelDetached: the scribe has its own pid file and lifecycle.
+ */
+export function spawnScribeDetached({ cliEntry, logPath }: SpawnScribeOptions): number {
+  const out = openSync(logPath, 'a');
+  const child = spawn(process.execPath, [cliEntry, 'watch'], {
+    env: process.env,
+    detached: true,
+    stdio: ['ignore', out, out],
+  });
+  closeSync(out);
+  child.unref();
+  if (child.pid === undefined) {
+    throw new Error(`Failed to spawn scribe process: ${cliEntry}`);
+  }
+  return child.pid;
+}
+
