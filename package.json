@@ -12,6 +12,9 @@
   "engines": {
     "node": ">=20"
   },
+  "previously": {
+    "kernelLine": "0.8"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",

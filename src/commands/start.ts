@@ -2,7 +2,9 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig } from '../lib/config.js';
 import { isPortOpen, waitForHealthy } from '../lib/health.js';
+import { resolveKernel } from '../lib/kernel.js';
 import { resolvePaths } from '../lib/paths.js';
+import { checkCompat } from '../lib/version-policy.js';
 import {
   isProcessAlive,
   readPidFile,
@@ -36,14 +38,25 @@ export async function run(args: string[], opts: StartOptions = {}): Promise<numb
     removePidFile(paths.pidPath);
   }
 
-  const kernelDir = config.kernelDir ?? paths.kernelDir;
+  // Kernel dir resolution: explicit config kernelDir wins; otherwise the
+  // current-version pointer; otherwise the legacy default dir (C1 flow).
+  const kernel = resolveKernel(config.kernelDir, paths);
+  if (kernel.version !== null) {
+    const compat = checkCompat(kernel.version);
+    if (!compat.ok) {
+      console.error(compat.message);
+      return 1;
+    }
+  }
+  const kernelDir = kernel.dir;
   const serverJs = join(kernelDir, 'server.js');
   if (!existsSync(serverJs)) {
     console.error(`Kernel artifact not found: ${serverJs}`);
     console.error('');
     console.error('The Previously kernel is the standalone build produced by the agent repo.');
-    console.error(`Place it (including server.js) in ${kernelDir}, or set "kernelDir" in`);
-    console.error(`${paths.configPath} to point at it.`);
+    console.error('Install one with `previously kernel install --ref <ref>` (builds from source),');
+    console.error(`or place a standalone build (including server.js) in ${paths.kernelDir},`);
+    console.error(`or set "kernelDir" in ${paths.configPath} to point at one.`);
     return 1;
   }
 

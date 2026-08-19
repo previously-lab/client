@@ -5,7 +5,11 @@ import { resolvePaths, type PreviouslyPaths } from './paths.js';
 export interface PreviouslyConfig {
   storage: 'local';
   memoryRoot: string;
-  /** Directory containing the kernel standalone build (server.js). Default: ~/.previously/kernel */
+  /**
+   * Explicit kernel dir override. When unset, the kernel resolves via the
+   * current-version pointer (~/.previously/kernel/current.json), falling back
+   * to the legacy default ~/.previously/kernel.
+   */
   kernelDir?: string;
   port: number;
   hostname: string;

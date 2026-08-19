@@ -15,7 +15,13 @@ export async function run(args: string[]): Promise<number> {
   });
 
   const paths = resolvePaths();
-  for (const dir of [paths.home, paths.memoryDir, paths.kernelDir, paths.logsDir]) {
+  for (const dir of [
+    paths.home,
+    paths.memoryDir,
+    paths.kernelDir,
+    paths.kernelVersionsDir,
+    paths.logsDir,
+  ]) {
     mkdirSync(dir, { recursive: true });
   }
 
@@ -27,9 +33,9 @@ export async function run(args: string[]): Promise<number> {
 
   saveConfig(defaultConfig(paths), paths);
   console.log(`Initialized Previously home at ${paths.home}`);
-  console.log(`  memory/  local time-slice storage`);
-  console.log(`  kernel/  place the kernel standalone build (server.js) here`);
-  console.log(`  logs/    kernel logs`);
-  console.log(`  config.json  written with defaults`);
+  console.log(`  memory/          local time-slice storage`);
+  console.log(`  kernel/versions/ installed kernel versions (see \`previously kernel install\`)`);
+  console.log(`  logs/            kernel logs`);
+  console.log(`  config.json      written with defaults`);
   return 0;
 }
