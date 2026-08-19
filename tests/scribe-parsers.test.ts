@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { parseClaudeCodeLine } from '../src/scribe/parsers/claude-code.js';
 import { parseCodexLine } from '../src/scribe/parsers/codex.js';
+import { parseGeminiDoc } from '../src/scribe/parsers/gemini.js';
+import { kimiSessionIdFromPath, parseKimiCodeLine } from '../src/scribe/parsers/kimi-code.js';
 import {
   claudeAssistantLine,
   claudeMetaLines,
@@ -11,6 +13,12 @@ import {
   codexFunctionCallOutputLine,
   codexMessageLine,
   codexSessionMetaLine,
+  geminiChatDoc,
+  kimiWireAgentTextLine,
+  kimiWireMetaLines,
+  kimiWireThinkLine,
+  kimiWireToolCallLine,
+  kimiWireUserLine,
 } from './scribe-fixtures.js';
 
 describe('claude-code parser', () => {
@@ -142,5 +150,161 @@ describe('codex parser', () => {
     const out = parseCodexLine(line);
     expect(out.events).toEqual([]);
     expect(out.appendix).toEqual([line]);
+  });
+});
+
+/* ---- Kimi Code wire parser (shape VERIFIED against real wire.jsonl files) ---- */
+
+describe('kimi-code parser', () => {
+  // 2026-08-10T17:00:00.000Z
+  const t0 = Date.parse('2026-08-10T17:00:00.000Z');
+  const iso = '2026-08-10T17:00:00.000Z';
+
+  it('parses a user append_message into a user event (epoch-ms → ISO)', () => {
+    const out = parseKimiCodeLine(kimiWireUserLine('帮我看看这个仓库', t0));
+    expect(out.appendix).toEqual([]);
+    expect(out.events).toEqual([{ timestamp: iso, role: 'user', text: '帮我看看这个仓库' }]);
+  });
+
+  it('parses content.part text parts into agent events', () => {
+    const out = parseKimiCodeLine(kimiWireAgentTextLine('好的，我先看一下。', t0));
+    expect(out.events).toEqual([{ timestamp: iso, role: 'agent', text: '好的，我先看一下。' }]);
+  });
+
+  it('skips think parts quietly', () => {
+    const out = parseKimiCodeLine(kimiWireThinkLine('用户想让我看仓库…', t0));
+    expect(out.events).toEqual([]);
+    expect(out.appendix).toEqual([]);
+  });
+
+  it('parses tool.call into a tool event with truncated args', () => {
+    const out = parseKimiCodeLine(kimiWireToolCallLine('Bash', { command: 'ls -la' }, t0));
+    expect(out.events).toHaveLength(1);
+    expect(out.events[0]).toMatchObject({ timestamp: iso, role: 'agent', toolName: 'Bash' });
+    expect(out.events[0]!.text).toBe('ls -la');
+  });
+
+  it('skips harness bookkeeping quietly (metadata, profile.bind, turn.prompt, …)', () => {
+    for (const line of kimiWireMetaLines('重复的用户输入', t0)) {
+      const out = parseKimiCodeLine(line);
+      expect(out.events).toEqual([]);
+      expect(out.appendix).toEqual([]);
+    }
+  });
+
+  it('skips unknown future line types quietly', () => {
+    const out = parseKimiCodeLine(JSON.stringify({ type: 'future.thing', time: t0, x: 1 }));
+    expect(out.events).toEqual([]);
+    expect(out.appendix).toEqual([]);
+  });
+
+  it('sends invalid JSON to the appendix', () => {
+    const out = parseKimiCodeLine('{"type":"context.append_message",oops');
+    expect(out.events).toEqual([]);
+    expect(out.appendix).toEqual(['{"type":"context.append_message",oops']);
+  });
+
+  it('sends a conversational line without a time to the appendix', () => {
+    const line = JSON.stringify({
+      type: 'context.append_message',
+      message: { role: 'user', content: [{ type: 'text', text: '没有时间' }] },
+    });
+    const out = parseKimiCodeLine(line);
+    expect(out.events).toEqual([]);
+    expect(out.appendix).toEqual([line]);
+  });
+
+  it('skips image-only user messages (no text blocks)', () => {
+    const line = JSON.stringify({
+      type: 'context.append_message',
+      message: { role: 'user', content: [{ type: 'image_url', image_url: { url: 'file:///x.png' } }] },
+      time: t0,
+    });
+    const out = parseKimiCodeLine(line);
+    expect(out.events).toEqual([]);
+    expect(out.appendix).toEqual([]);
+  });
+
+  it('derives the session id from the wire path', () => {
+    expect(
+      kimiSessionIdFromPath(
+        'C:\\Users\\Dream\\.kimi-code\\sessions\\wd_proj_ab12\\session_159b57a1-39d3-4738-a8ba-fcc1b3150388\\agents\\main\\wire.jsonl',
+      ),
+    ).toBe('session_159b57a1-39d3-4738-a8ba-fcc1b3150388/main');
+    expect(
+      kimiSessionIdFromPath(
+        '/home/u/.kimi-code/sessions/wd_proj_ab12/session_aaaa/agents/agent-3/wire.jsonl',
+      ),
+    ).toBe('session_aaaa/agent-3');
+    expect(kimiSessionIdFromPath('/tmp/other/wire.jsonl')).toBeUndefined();
+  });
+});
+
+/* ---- Gemini CLI checkpoint parser (ASSUMED shape — no real install) ---- */
+
+describe('gemini parser (ASSUMED format)', () => {
+  const t1 = '2026-08-10T17:00:00.000Z';
+  const t2 = '2026-08-10T17:00:30.000Z';
+
+  it('parses user and gemini messages with toolCalls', () => {
+    const doc = geminiChatDoc('gem-sess-1', [
+      { kind: 'user', text: '列出目录', timestamp: t1 },
+      {
+        kind: 'gemini',
+        text: '好的。',
+        timestamp: t2,
+        toolCalls: [{ name: 'run_shell_command', args: { command: 'ls' } }],
+      },
+      { kind: 'info', text: 'checkpoint saved', timestamp: t2 },
+    ]);
+    const out = parseGeminiDoc(doc);
+    expect(out.appendix).toEqual([]);
+    expect(out.sessionId).toBe('gem-sess-1');
+    // info message skipped; user + agent text + tool call remain.
+    expect(out.events).toEqual([
+      { timestamp: t1, role: 'user', text: '列出目录' },
+      { timestamp: t2, role: 'agent', text: '好的。' },
+      { timestamp: t2, role: 'agent', toolName: 'run_shell_command', text: '{"command":"ls"}' },
+    ]);
+  });
+
+  it('skips messages with no conversational content', () => {
+    const doc = JSON.stringify({
+      sessionId: 's',
+      messages: [
+        { id: 'm1', timestamp: t1, type: 'warning', content: 'quota low' },
+        { id: 'm2', timestamp: t1, type: 'tool_group', toolCalls: [] },
+        { id: 'm3', timestamp: t1, type: 'gemini', content: '' },
+      ],
+    });
+    const out = parseGeminiDoc(doc);
+    expect(out.events).toEqual([]);
+    expect(out.appendix).toEqual([]);
+  });
+
+  it('sends a conversational message without a timestamp to the appendix', () => {
+    const doc = JSON.stringify({
+      sessionId: 's',
+      messages: [{ id: 'm1', type: 'user', content: [{ text: '没有时间戳' }] }],
+    });
+    const out = parseGeminiDoc(doc);
+    expect(out.events).toEqual([]);
+    expect(out.appendix).toHaveLength(1);
+    expect(out.appendix[0]).toContain('没有时间戳');
+  });
+
+  it('sends an unparseable document to the appendix as a capped preview', () => {
+    const garbage = 'x'.repeat(10_000);
+    const out = parseGeminiDoc(garbage);
+    expect(out.events).toEqual([]);
+    expect(out.appendix).toHaveLength(1);
+    expect(out.appendix[0]!.length).toBeLessThan(5000);
+    expect(out.appendix[0]).toContain('truncated');
+  });
+
+  it('sends a doc without a messages array to the appendix', () => {
+    const out = parseGeminiDoc(JSON.stringify({ sessionId: 's', notMessages: [] }));
+    expect(out.events).toEqual([]);
+    expect(out.appendix).toHaveLength(1);
   });
 });

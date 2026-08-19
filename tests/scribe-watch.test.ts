@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolvePaths } from '../src/lib/paths.js';
@@ -9,8 +9,10 @@ import { cleanupTempHome, useTempHome } from './helpers.js';
 import {
   claudeAssistantLine,
   claudeUserLine,
+  geminiChatDoc,
   makeFakeAgentHome,
   writeClaudeSession,
+  writeGeminiSession,
 } from './scribe-fixtures.js';
 
 /** Real chokidar integration: watch → append → the slice grows. */
@@ -87,5 +89,38 @@ describe('scribe watcher', () => {
     await watcher.rescan();
     const core = join(home, 'memory', 'episodic', 'slices', '2026', '08', '10', '1600', 'timeline', 'core.md');
     expect(readFileSync(core, 'utf8')).toContain('晚到的会话');
+  }, 30_000);
+
+  it('gemini: whole-file rewrites grow the slice live; a vanished file is graceful', async () => {
+    const engine = setup();
+    const t1 = '2026-08-10T18:00:00.000Z';
+    const file = writeGeminiSession(roots, 'watch', geminiChatDoc('gem-watch', [
+      { kind: 'user', text: '第一条 gemini 消息', timestamp: t1 },
+    ]));
+    const core = join(home, 'memory', 'episodic', 'slices', '2026', '08', '10', '1800', 'timeline', 'core.md');
+
+    watcher = new ScribeWatcher(engine, roots);
+    await watcher.start();
+    await engine.drain();
+    await vi.waitFor(() => {
+      expect(readFileSync(core, 'utf8')).toContain('第一条 gemini 消息');
+    }, { timeout: 15_000 });
+
+    // Checkpoint rewrite (same path, whole new document): slice grows in place.
+    writeGeminiSession(roots, 'watch', geminiChatDoc('gem-watch', [
+      { kind: 'user', text: '第一条 gemini 消息', timestamp: t1 },
+      { kind: 'gemini', text: '第二条回复', timestamp: '2026-08-10T18:00:30.000Z' },
+    ]));
+    await vi.waitFor(() => {
+      expect(readFileSync(core, 'utf8')).toContain('第二条回复');
+    }, { timeout: 15_000 });
+    expect((readFileSync(core, 'utf8').match(/^## Turn /gm) ?? []).length).toBe(2);
+
+    // Retention cleanup deletes the file mid-watch: no crash, no error
+    // recorded, slice left intact.
+    rmSync(file);
+    await watcher.rescan();
+    expect(engine.getStatus().errors).toEqual([]);
+    expect(readFileSync(core, 'utf8')).toContain('第一条 gemini 消息');
   }, 30_000);
 });

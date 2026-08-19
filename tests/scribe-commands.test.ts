@@ -19,9 +19,14 @@ import {
   claudeUserLine,
   codexMessageLine,
   codexSessionMetaLine,
+  geminiChatDoc,
+  kimiWireAgentTextLine,
+  kimiWireUserLine,
   makeFakeAgentHome,
   writeClaudeSession,
   writeCodexSession,
+  writeGeminiSession,
+  writeKimiSession,
 } from './scribe-fixtures.js';
 
 describe('scribe commands', () => {
@@ -78,7 +83,27 @@ describe('scribe commands', () => {
 
   it('rejects unknown subcommands and bad --source values', async () => {
     expect(await runScribe(['bogus'], { roots })).toBe(1);
-    expect(await runScribe(['once', '--source', 'gemini'], { roots })).toBe(1);
+    expect(await runScribe(['once', '--source', 'not-a-source'], { roots })).toBe(1);
+  });
+
+  it('scribe once --source accepts the kimi-code and gemini sources', async () => {
+    const t0 = Date.parse('2026-08-10T17:00:00.000Z');
+    writeKimiSession(roots, 'session_cmd-test', 'main', [
+      kimiWireUserLine('命令行覆盖', t0),
+      kimiWireAgentTextLine('收到', t0 + 1000),
+    ]);
+    writeGeminiSession(roots, 'cmd', geminiChatDoc('gem-cmd', [
+      { kind: 'user', text: 'gemini 命令行覆盖', timestamp: '2026-08-10T18:00:00.000Z' },
+      { kind: 'gemini', text: '完成', timestamp: '2026-08-10T18:00:30.000Z' },
+    ]));
+
+    const kimi = await runScribe(['once', '--source', 'kimi-code'], { roots });
+    expect(kimi).toBe(0);
+    expect(stdout.join('\n')).toContain('kimi-code: 1/1 files, 2 events');
+    stdout = [];
+    const gemini = await runScribe(['once', '--source', 'gemini'], { roots });
+    expect(gemini).toBe(0);
+    expect(stdout.join('\n')).toContain('gemini: 1/1 files, 2 events');
   });
 
   it('status reports the scribe section after a scan', async () => {

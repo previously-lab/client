@@ -45,7 +45,7 @@ Commands:
   upgrade   Install the newest kernel release within the supported version line
   mcp       Local read-only MCP server (serve over stdio)
   watch     Run the scribe in the foreground (fs watch → time slices; start includes it)
-  scribe    Scribe one-shot scan: scribe once [--source claude-code|codex]
+  scribe    Scribe one-shot scan: scribe once [--source claude-code|codex|kimi-code|gemini]
   install   Register the MCP server into agent configs (--claude / --codex / --kimi / --all)
   uninstall Remove the MCP server from agent configs
   bridge-exec  Subscription bridge entry for the kernel delegateTask tool (JSON on stdin, result on stdout)

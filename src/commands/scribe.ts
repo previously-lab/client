@@ -3,6 +3,7 @@ import { loadConfig } from '../lib/config.js';
 import { resolvePaths, type PreviouslyPaths } from '../lib/paths.js';
 import { isProcessAlive, readPidFile, removePidFile, writePidFile } from '../lib/process.js';
 import { CursorStore } from '../scribe/cursor.js';
+import { recordError } from '../scribe/status.js';
 import { SCRIBE_SOURCES, type ScribeRoots, type ScribeSource } from '../scribe/types.js';
 import { resolveScribeRoots, ScribeEngine, ScribeWatcher } from '../scribe/watcher.js';
 
@@ -30,8 +31,8 @@ function parseSourceArg(args: string[]): ScribeSource | undefined {
   const idx = args.indexOf('--source');
   if (idx === -1) return undefined;
   const value = args[idx + 1];
-  if (value === 'claude-code' || value === 'codex') return value;
-  throw new Error(`Unknown --source value: ${value ?? '(missing)'} (expected claude-code|codex)`);
+  if ((SCRIBE_SOURCES as readonly string[]).includes(value ?? '')) return value as ScribeSource;
+  throw new Error(`Unknown --source value: ${value ?? '(missing)'} (expected ${SCRIBE_SOURCES.join('|')})`);
 }
 
 function formatSourceLine(source: ScribeSource, s: {
@@ -44,13 +45,14 @@ function formatSourceLine(source: ScribeSource, s: {
 }
 
 /**
- * `previously scribe once [--source claude-code|codex]` — one-shot full scan
- * of the agent session logs without watching. Backfill + debugging.
+ * `previously scribe once [--source claude-code|codex|kimi-code|gemini]` —
+ * one-shot full scan of the agent session logs without watching.
+ * Backfill + debugging.
  */
 export async function runScribe(args: string[], opts: ScribeCommandOptions = {}): Promise<number> {
   const [sub, ...rest] = args;
   if (sub !== 'once') {
-    console.error('Usage: previously scribe once [--source claude-code|codex]');
+    console.error(`Usage: previously scribe once [--source ${SCRIBE_SOURCES.join('|')}]`);
     return 1;
   }
   let source: ScribeSource | undefined;
@@ -106,12 +108,24 @@ export async function runWatch(args: string[], opts: WatchOptions = {}): Promise
   const engine = createEngine(paths, roots);
   const watcher = new ScribeWatcher(engine, roots);
 
+  // Long-running process safety net (§9 failure philosophy): a rejected
+  // promise that escaped every local catch is still surfaced honestly — into
+  // the scribe status file and the scribe log (stdout in detached mode) —
+  // instead of crashing the watcher or vanishing silently.
+  process.on('unhandledRejection', (reason) => {
+    recordError(engine.getStatus(), '(unhandledRejection)', reason);
+    engine.writeStatus();
+    console.error(`unhandled rejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`);
+  });
+
   mkdirSync(paths.logsDir, { recursive: true });
   writePidFile(paths.scribePidPath, process.pid);
 
   const rescanMs = opts.rescanMs ?? Number(process.env.PREVIOUSLY_SCRIBE_RESCAN_MS ?? 300_000);
   const timer = setInterval(() => {
     watcher.rescan().catch((err) => {
+      recordError(engine.getStatus(), '(rescan)', err);
+      engine.writeStatus();
       console.error(`rescan failed: ${err instanceof Error ? err.message : err}`);
     });
   }, rescanMs);
@@ -122,8 +136,16 @@ export async function runWatch(args: string[], opts: WatchOptions = {}): Promise
     await watcher.stop();
     removePidFile(paths.scribePidPath);
   };
-  process.on('SIGINT', () => void shutdown().then(() => process.exit(0)));
-  process.on('SIGTERM', () => void shutdown().then(() => process.exit(0)));
+  const onSignal = (): void => {
+    shutdown()
+      .then(() => process.exit(0))
+      .catch((err: unknown) => {
+        console.error(`shutdown failed: ${err instanceof Error ? err.message : err}`);
+        process.exit(1);
+      });
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
 
   await watcher.start();
   await engine.drain();

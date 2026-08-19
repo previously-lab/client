@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { resolvePaths } from '../src/lib/paths.js';
@@ -16,9 +16,17 @@ import {
   codexFunctionCallOutputLine,
   codexMessageLine,
   codexSessionMetaLine,
+  geminiChatDoc,
+  kimiWireAgentTextLine,
+  kimiWireMetaLines,
+  kimiWireThinkLine,
+  kimiWireToolCallLine,
+  kimiWireUserLine,
   makeFakeAgentHome,
   writeClaudeSession,
   writeCodexSession,
+  writeGeminiSession,
+  writeKimiSession,
 } from './scribe-fixtures.js';
 
 /**
@@ -266,7 +274,144 @@ describe('scribe engine', () => {
     expect(summary.errors).toEqual([]);
     expect(summary.sources['claude-code'].rootPresent).toBe(false);
     expect(summary.sources.codex.rootPresent).toBe(false);
+    expect(summary.sources['kimi-code'].rootPresent).toBe(false);
+    expect(summary.sources.gemini.rootPresent).toBe(false);
     const status = readScribeStatus(resolvePaths().scribeStatusPath);
     expect(status!.sources['claude-code'].rootPresent).toBe(false);
+  });
+
+  it('kimi-code: wire.jsonl backfills with the path-derived session id', async () => {
+    const engine = setup();
+    const t0 = Date.parse('2026-08-10T17:00:00.000Z');
+    writeKimiSession(roots, 'session_aaaa-bbbb', 'main', [
+      ...kimiWireMetaLines('用户的问题', t0),
+      kimiWireUserLine('用户的问题', t0 + 1000),
+      kimiWireThinkLine('让我想想…', t0 + 2000),
+      kimiWireAgentTextLine('我的回答。', t0 + 3000),
+      kimiWireToolCallLine('Bash', { command: 'ls -la' }, t0 + 4000),
+    ]);
+
+    const summary = await engine.scanOnce();
+    expect(summary.errors).toEqual([]);
+    // user + agent text + tool call; turn.prompt duplicate and think skipped.
+    expect(summary.sources['kimi-code'].events).toBe(3);
+    expect(summary.sources['kimi-code'].filesProcessed).toBe(1);
+
+    const md = readFileSync(coreMd('2026-08-10-1700'), 'utf8');
+    expect(md).toContain('source: kimi-code');
+    expect(md).toContain('session_id: session_aaaa-bbbb/main');
+    expect(md).toContain('**Tool: Bash**');
+    // turn.prompt must not double-transcribe the user's text.
+    expect((md.match(/用户的问题/g) ?? []).length).toBe(1);
+  });
+
+  it('kimi-code: subagent wire files get their own session ids', async () => {
+    const engine = setup();
+    const t0 = Date.parse('2026-08-10T17:00:00.000Z');
+    writeKimiSession(roots, 'session_aaaa-bbbb', 'main', [
+      kimiWireUserLine('主会话', t0),
+      kimiWireAgentTextLine('主回答', t0 + 1000),
+    ]);
+    writeKimiSession(roots, 'session_aaaa-bbbb', 'agent-0', [
+      kimiWireUserLine('子代理任务', t0 + 2000),
+      kimiWireAgentTextLine('子代理报告', t0 + 3000),
+    ]);
+
+    const summary = await engine.scanOnce();
+    expect(summary.sources['kimi-code'].filesProcessed).toBe(2);
+    // Same start minute → distinct slice ids. Files process in path order
+    // (agents/agent-0 before agents/main), so agent-0 claims 1700 first.
+    expect(existsSync(coreMd('2026-08-10-1700'))).toBe(true);
+    expect(existsSync(coreMd('2026-08-10-1701'))).toBe(true);
+    expect(readFileSync(coreMd('2026-08-10-1700'), 'utf8')).toContain('session_aaaa-bbbb/agent-0');
+    expect(readFileSync(coreMd('2026-08-10-1701'), 'utf8')).toContain('session_aaaa-bbbb/main');
+  });
+
+  it('gemini: whole-document rewrite re-derives the slice in place', async () => {
+    const engine = setup();
+    const t1 = '2026-08-10T18:00:00.000Z';
+    const t2 = '2026-08-10T18:00:30.000Z';
+    const t3 = '2026-08-10T18:01:00.000Z';
+    const file = writeGeminiSession(
+      roots,
+      's1',
+      geminiChatDoc('gem-sess-1', [
+        { kind: 'user', text: '列出目录', timestamp: t1 },
+        { kind: 'gemini', text: '好的。', timestamp: t2 },
+      ]),
+    );
+
+    const first = await engine.scanOnce();
+    expect(first.errors).toEqual([]);
+    expect(first.sources.gemini.events).toBe(2);
+    expect(first.sources.gemini.filesProcessed).toBe(1);
+    const md1 = readFileSync(coreMd('2026-08-10-1800'), 'utf8');
+    expect(md1).toContain('source: gemini');
+    expect(md1).toContain('session_id: gem-sess-1');
+    expect(countTurns('2026-08-10-1800')).toBe(2);
+
+    // Checkpoint rewrite with a new turn: the slice grows IN PLACE.
+    writeFileSync(
+      file,
+      geminiChatDoc('gem-sess-1', [
+        { kind: 'user', text: '列出目录', timestamp: t1 },
+        { kind: 'gemini', text: '好的。', timestamp: t2 },
+        { kind: 'user', text: '再看测试', timestamp: t3 },
+      ]) + '\n',
+      'utf8',
+    );
+    const result = await engine.processFile(file, 'gemini');
+    expect(result!.newEvents).toBe(1);
+    expect(countTurns('2026-08-10-1800')).toBe(3);
+
+    // Unchanged rewrite (same bytes): no new events, no byte churn.
+    const md2 = readFileSync(coreMd('2026-08-10-1800'), 'utf8');
+    const again = await engine.processFile(file, 'gemini');
+    expect(again!.newEvents).toBe(0);
+    expect(readFileSync(coreMd('2026-08-10-1800'), 'utf8')).toBe(md2);
+  });
+
+  it('gemini: a corrupt checkpoint lands in the appendix without killing the scan', async () => {
+    const engine = setup();
+    const t1 = '2026-08-10T18:00:00.000Z';
+    writeGeminiSession(roots, 'good', geminiChatDoc('gem-good', [
+      { kind: 'user', text: '好的会话', timestamp: t1 },
+      { kind: 'gemini', text: '回答', timestamp: '2026-08-10T18:00:30.000Z' },
+    ]));
+    writeGeminiSession(roots, 'bad', '{"sessionId":"gem-bad","messages":[{broken');
+
+    const summary = await engine.scanOnce();
+    expect(summary.errors).toEqual([]);
+    expect(summary.sources.gemini.filesProcessed).toBe(2);
+    expect(summary.sources.gemini.parseErrors).toBe(1);
+    expect(existsSync(coreMd('2026-08-10-1800'))).toBe(true);
+  });
+
+  it('gemini: file vanishing mid-watch (retention cleanup) is graceful', async () => {
+    const engine = setup();
+    const t1 = '2026-08-10T18:00:00.000Z';
+    const file = writeGeminiSession(roots, 's1', geminiChatDoc('gem-sess-1', [
+      { kind: 'user', text: '会消失的文件', timestamp: t1 },
+    ]));
+    await engine.scanOnce();
+    expect(existsSync(coreMd('2026-08-10-1800'))).toBe(true);
+
+    // Retention cleanup deletes the checkpoint: unlink tombstones the cursor,
+    // the already-written slice stays, and nothing crashes or errors.
+    rmSync(file);
+    engine.handleUnlink(file);
+    const gone = await engine.processFile(file, 'gemini');
+    expect(gone).toBeNull();
+    expect(engine.getStatus().errors).toEqual([]);
+    expect(readFileSync(coreMd('2026-08-10-1800'), 'utf8')).toContain('会消失的文件');
+
+    // The file reappearing later is re-read from scratch.
+    writeGeminiSession(roots, 's1', geminiChatDoc('gem-sess-1', [
+      { kind: 'user', text: '会消失的文件', timestamp: t1 },
+      { kind: 'gemini', text: '又回来了', timestamp: '2026-08-10T18:01:00.000Z' },
+    ]));
+    const back = await engine.processFile(file, 'gemini');
+    expect(back!.newEvents).toBe(2);
+    expect(countTurns('2026-08-10-1800')).toBe(2);
   });
 });

@@ -1,12 +1,18 @@
 import { createHash } from 'node:crypto';
 import { existsSync, openSync, readFileSync, readSync, readdirSync, statSync, closeSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, extname, join, relative } from 'node:path';
+import { basename, dirname, extname, join, relative } from 'node:path';
 import { watch, type FSWatcher } from 'chokidar';
 import { writeFileAtomic } from '../lib/atomic.js';
 import { chainHash, CursorStore, EMPTY_HASH, type FileCursor } from './cursor.js';
 import { CLAUDE_CODE_PARSER_VERSION, parseClaudeCodeLine } from './parsers/claude-code.js';
 import { CODEX_PARSER_VERSION, parseCodexLine } from './parsers/codex.js';
+import { GEMINI_PARSER_VERSION, parseGeminiDoc } from './parsers/gemini.js';
+import {
+  KIMI_CODE_PARSER_VERSION,
+  kimiSessionIdFromPath,
+  parseKimiCodeLine,
+} from './parsers/kimi-code.js';
 import { resolveSliceId, writeSessionSlice } from './slicer.js';
 import {
   emptySourceStatus,
@@ -31,9 +37,38 @@ import {
  * status file, and surfaced — one bad file never kills the watcher loop.
  */
 
-const PARSERS: Record<ScribeSource, { parse: LineParser; version: number }> = {
-  'claude-code': { parse: parseClaudeCodeLine, version: CLAUDE_CODE_PARSER_VERSION },
-  codex: { parse: parseCodexLine, version: CODEX_PARSER_VERSION },
+interface ParserEntry {
+  parse: LineParser;
+  version: number;
+  /** True when the source rewrites a whole JSON document per save (Gemini):
+   *  the file is re-read and re-derived from scratch on every change. */
+  wholeFile?: boolean;
+  /** Which files under the source root belong to this source. */
+  matches: (filePath: string) => boolean;
+  /** Derive a session id from the file path when the format has none in-band. */
+  sessionIdFromPath?: (filePath: string) => string | undefined;
+}
+
+const isJsonl = (filePath: string): boolean => extname(filePath) === '.jsonl';
+
+const PARSERS: Record<ScribeSource, ParserEntry> = {
+  'claude-code': { parse: parseClaudeCodeLine, version: CLAUDE_CODE_PARSER_VERSION, matches: isJsonl },
+  codex: { parse: parseCodexLine, version: CODEX_PARSER_VERSION, matches: isJsonl },
+  'kimi-code': {
+    parse: parseKimiCodeLine,
+    version: KIMI_CODE_PARSER_VERSION,
+    // Only the per-agent wire stream is conversational; nothing else under
+    // the sessions tree is .jsonl today, but match precisely regardless.
+    matches: (filePath) => basename(filePath) === 'wire.jsonl',
+    sessionIdFromPath: kimiSessionIdFromPath,
+  },
+  gemini: {
+    parse: parseGeminiDoc,
+    version: GEMINI_PARSER_VERSION,
+    wholeFile: true,
+    matches: (filePath) =>
+      extname(filePath) === '.json' && basename(dirname(filePath)) === 'chats',
+  },
 };
 
 /** Default watch roots under the user's home (Windows and macOS alike). */
@@ -41,11 +76,13 @@ export function resolveScribeRoots(homeDir: string = homedir()): ScribeRoots {
   return {
     'claude-code': join(homeDir, '.claude', 'projects'),
     codex: join(homeDir, '.codex', 'sessions'),
+    'kimi-code': join(homeDir, '.kimi-code', 'sessions'),
+    gemini: join(homeDir, '.gemini', 'tmp'),
   };
 }
 
-/** Recursively list `*.jsonl` files under root; [] when the root is absent. */
-export function listSessionFiles(root: string): string[] {
+/** Recursively list files under root matching the source; [] when absent. */
+export function listSessionFiles(root: string, matches: (filePath: string) => boolean): string[] {
   const rootStat = statSync(root, { throwIfNoEntry: false });
   if (rootStat === undefined || !rootStat.isDirectory()) return [];
   const out: string[] = [];
@@ -53,7 +90,7 @@ export function listSessionFiles(root: string): string[] {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) walk(path);
-      else if (entry.isFile() && extname(entry.name) === '.jsonl') out.push(path);
+      else if (entry.isFile() && matches(path)) out.push(path);
     }
   };
   walk(root);
@@ -119,17 +156,25 @@ export class ScribeEngine {
       pid: process.pid,
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      sources: {
-        'claude-code': emptySourceStatus(opts.roots['claude-code'], existsSync(opts.roots['claude-code'])),
-        codex: emptySourceStatus(opts.roots.codex, existsSync(opts.roots.codex)),
-      },
+      sources: Object.fromEntries(
+        SCRIBE_SOURCES.map((source) => [
+          source,
+          emptySourceStatus(opts.roots[source], existsSync(opts.roots[source])),
+        ]),
+      ) as Record<ScribeSource, SourceStatus>,
       errors: [],
     };
   }
 
+  private defaultSessionId(filePath: string, source: ScribeSource): string {
+    const fromPath = PARSERS[source].sessionIdFromPath?.(filePath);
+    if (fromPath !== undefined) return fromPath;
+    return sanitizeFilePart(basename(filePath, extname(filePath)));
+  }
+
   private sessionStatePath(filePath: string, source: ScribeSource): string {
     const key = createHash('sha256').update(filePath).digest('hex').slice(0, 12);
-    const name = sanitizeFilePart(basename(filePath, '.jsonl'));
+    const name = sanitizeFilePart(basename(filePath, extname(filePath)));
     return join(this.sessionsDir, source, `${name}-${key}.json`);
   }
 
@@ -188,7 +233,7 @@ export class ScribeEngine {
     const present = existsSync(root);
     const status = this.sourceStatus(source);
     status.rootPresent = present;
-    status.filesSeen = present ? listSessionFiles(root).length : 0;
+    status.filesSeen = present ? listSessionFiles(root, PARSERS[source].matches).length : 0;
     status.filesProcessed = this.cursors.files().filter((f) => this.cursors.get(f)?.source === source).length;
   }
 
@@ -202,9 +247,13 @@ export class ScribeEngine {
    */
   async processFile(filePath: string, source: ScribeSource): Promise<FileProcessResult | null> {
     const stat = statSync(filePath, { throwIfNoEntry: false });
+    // A vanished file (Gemini retention cleanup, USB-drive home ejected, …) is
+    // routine, not an error: nothing to do, the unlink path owns the cursor.
     if (stat === undefined || !stat.isFile()) return null;
 
     const parser = PARSERS[source];
+    if (parser.wholeFile === true) return this.processWholeFile(filePath, source, stat.size);
+
     let cursor = this.cursors.get(filePath);
     let truncated = false;
     let state: SessionState | null = null;
@@ -229,7 +278,7 @@ export class ScribeEngine {
     if (state === null) {
       state = {
         source,
-        sessionId: sanitizeFilePart(basename(filePath, '.jsonl')),
+        sessionId: this.defaultSessionId(filePath, source),
         sliceId: null,
         events: [],
         appendix: [],
@@ -308,6 +357,80 @@ export class ScribeEngine {
     return { filePath, source, truncated, newEvents, newParseErrors, sliceId: state.sliceId };
   }
 
+  /**
+   * Whole-document sources (Gemini chat checkpoints): the file is rewritten
+   * wholesale on every save, so there is no byte-offset tail to chase. The
+   * content-hash cursor decides whether anything changed; a change re-derives
+   * the full session state from scratch (the slice id is kept from the
+   * previous state so rewrites stay in place). Deterministic rendering keeps
+   * re-derives byte-identical, so this is idempotent.
+   */
+  private processWholeFile(
+    filePath: string,
+    source: ScribeSource,
+    size: number,
+  ): FileProcessResult {
+    const parser = PARSERS[source];
+    const raw = readFileSync(filePath);
+    const hash = chainHash(EMPTY_HASH, raw);
+    const cursor = this.cursors.get(filePath);
+
+    if (
+      cursor !== null &&
+      cursor.hash === hash &&
+      cursor.parserVersion === parser.version &&
+      cursor.source === source
+    ) {
+      // Unchanged since the last pass — nothing to do.
+      const prior = this.loadSessionState(filePath, source);
+      return { filePath, source, truncated: false, newEvents: 0, newParseErrors: 0, sliceId: prior?.sliceId ?? null };
+    }
+
+    const prevState = cursor !== null ? this.loadSessionState(filePath, source) : null;
+    const outcome = parser.parse(raw.toString('utf8'));
+    const state: SessionState = {
+      source,
+      sessionId:
+        outcome.sessionId ?? prevState?.sessionId ?? this.defaultSessionId(filePath, source),
+      sliceId: prevState?.sliceId ?? null,
+      events: outcome.events,
+      appendix: outcome.appendix,
+      parseErrors: outcome.appendix.length,
+    };
+    if (state.sliceId === null && outcome.events.length > 0) {
+      state.sliceId = resolveSliceId(this.memoryRoot, state.sessionId, outcome.events[0]!.timestamp);
+    }
+
+    // Status counters are cumulative; for a re-derived document only the
+    // growth since the last pass is "new".
+    const newEvents = Math.max(0, outcome.events.length - (prevState?.events.length ?? 0));
+    const newParseErrors = Math.max(0, outcome.appendix.length - (prevState?.parseErrors ?? 0));
+
+    this.cursors.set(filePath, {
+      source,
+      offset: size,
+      lines: 1,
+      hash,
+      parserVersion: parser.version,
+      updatedAt: new Date().toISOString(),
+    });
+    this.cursors.save();
+    this.saveSessionState(filePath, state);
+    if (state.sliceId !== null) writeSessionSlice(this.memoryRoot, state, this.timezone);
+
+    const status = this.sourceStatus(source);
+    status.events += newEvents;
+    status.parseErrors += newParseErrors;
+    if (outcome.events.length > 0) {
+      const last = outcome.events[outcome.events.length - 1]!.timestamp;
+      if (status.lastEventAt === null || last > status.lastEventAt) status.lastEventAt = last;
+    }
+    status.filesProcessed = this.cursors.files().filter((f) => this.cursors.get(f)?.source === source).length;
+    this.writeStatus();
+
+    return { filePath, source, truncated: false, newEvents, newParseErrors, sliceId: state.sliceId };
+  }
+
   /** Serialized per-file entry point used by the watcher callbacks. */
   enqueue(filePath: string, source: ScribeSource): void {
     const prev = this.queues.get(filePath) ?? Promise.resolve();
@@ -351,7 +474,7 @@ export class ScribeEngine {
       if (sourceFilter !== undefined && source !== sourceFilter) continue;
       try {
         this.refreshFilesSeen(source);
-        for (const file of listSessionFiles(this.roots[source])) {
+        for (const file of listSessionFiles(this.roots[source], PARSERS[source].matches)) {
           try {
             await this.processFile(file, source);
           } catch (err) {
@@ -413,9 +536,16 @@ export class ScribeWatcher {
    * Create the chokidar watcher lazily and attach newly-appeared roots.
    * Chokidar never fires `ready` for an empty path list, so with all roots
    * absent we simply stay watcher-less until a rescan finds one — the missing
-   * roots are reported in status either way.
+   * roots are reported in status either way. Roots that vanished (USB-drive
+   * home ejected, cleanup) are pruned so a later reappearance is re-attached.
    */
   private async ensureWatcher(): Promise<void> {
+    for (const root of [...this.watchedRoots]) {
+      if (statSync(root, { throwIfNoEntry: false })?.isDirectory() !== true) {
+        this.watchedRoots.delete(root);
+        await this.watcher?.unwatch(root);
+      }
+    }
     const newRoots = SCRIBE_SOURCES.map((s) => this.roots[s]).filter((root) => {
       const stat = statSync(root, { throwIfNoEntry: false });
       return stat?.isDirectory() === true && !this.watchedRoots.has(root);
@@ -436,7 +566,12 @@ export class ScribeWatcher {
         recordError(this.engine.getStatus(), '(watcher)', err);
         this.engine.writeStatus();
       });
-      await new Promise<void>((resolve) => this.watcher!.on('ready', () => resolve()));
+      // An error before `ready` (e.g. a root ejected mid-attach) must not hang
+      // start() forever — the error is already recorded in status; move on.
+      await new Promise<void>((resolve) => {
+        this.watcher!.on('ready', () => resolve());
+        this.watcher!.once('error', () => resolve());
+      });
     } else {
       this.watcher.add(newRoots);
     }
@@ -444,9 +579,9 @@ export class ScribeWatcher {
   }
 
   private onFile(path: string): void {
-    if (extname(path) !== '.jsonl') return;
     const source = this.sourceFor(path);
     if (source === null) return;
+    if (!PARSERS[source].matches(path)) return;
     this.engine.enqueue(path, source);
   }
 
@@ -457,7 +592,7 @@ export class ScribeWatcher {
     for (const source of SCRIBE_SOURCES) {
       const root = this.roots[source];
       this.engine.refreshFilesSeen(source);
-      for (const file of listSessionFiles(root)) {
+      for (const file of listSessionFiles(root, PARSERS[source].matches)) {
         this.engine.enqueue(file, source);
       }
     }

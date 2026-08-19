@@ -3,9 +3,9 @@
  * agents' session logs that transcribes them into Previously time slices.
  */
 
-export type ScribeSource = 'claude-code' | 'codex';
+export type ScribeSource = 'claude-code' | 'codex' | 'kimi-code' | 'gemini';
 
-export const SCRIBE_SOURCES: readonly ScribeSource[] = ['claude-code', 'codex'];
+export const SCRIBE_SOURCES: readonly ScribeSource[] = ['claude-code', 'codex', 'kimi-code', 'gemini'];
 
 /** A normalized conversational event extracted from any agent's log line. */
 export interface TranscriptEvent {
