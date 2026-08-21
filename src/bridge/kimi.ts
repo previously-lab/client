@@ -40,7 +40,7 @@ export const kimiAdapter: BridgeAdapter = {
     return runNdjsonAdapter(
       'kimi',
       [argv[0] ?? 'kimi', ...args],
-      { input: '', timeoutMs: opts.timeoutMs, signal: opts.signal },
+      { input: '', timeoutMs: opts.timeoutMs, signal: opts.signal, cwd: opts.cwd },
       extractKimiResult,
     );
   },

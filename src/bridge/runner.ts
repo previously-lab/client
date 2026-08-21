@@ -74,7 +74,7 @@ const KILL_GRACE_MS = 3_000;
 export function runProcess(
   command: string,
   args: string[],
-  opts: { input?: string; timeoutMs: number; signal?: AbortSignal },
+  opts: { input?: string; timeoutMs: number; signal?: AbortSignal; cwd?: string },
 ): Promise<ProcessOutcome> {
   return new Promise((resolve) => {
     let stdout = '';
@@ -95,7 +95,11 @@ export function runProcess(
       resolve({ code, stdout, stderr, timedOut, aborted, spawnError });
     };
 
-    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(command, args, {
+      cwd: opts.cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (d: string) => (stdout += d));
@@ -194,7 +198,7 @@ export function textFromContent(content: unknown): string {
 export async function runNdjsonAdapter(
   agent: BridgeAgent,
   argv: string[],
-  opts: { input: string; timeoutMs: number; signal?: AbortSignal },
+  opts: { input: string; timeoutMs: number; signal?: AbortSignal; cwd?: string },
   extract: (events: unknown[]) => string,
 ): Promise<string> {
   const command = argv[0];
@@ -256,7 +260,7 @@ export function checkCliPresence(agent: BridgeAgent): { found: boolean; detail: 
       : { found: false, detail: `${command} does not exist` };
   }
   const probe = process.platform === 'win32' ? 'where' : 'which';
-  const res = spawnSync(probe, [command], { stdio: 'pipe', encoding: 'utf8' });
+  const res = spawnSync(probe, [command], { stdio: 'pipe', encoding: 'utf8', windowsHide: true });
   if (res.status === 0 && typeof res.stdout === 'string' && res.stdout.trim().length > 0) {
     return { found: true, detail: res.stdout.trim().split('\n')[0]!.trim() };
   }

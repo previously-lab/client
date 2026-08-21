@@ -14,15 +14,21 @@ import { join } from 'node:path';
  *
  * Every fixture records how it was invoked: stdin goes to FIXTURE_STDIN_OUT
  * and argv to FIXTURE_ARGV_OUT when those env vars are set, so tests can
- * assert prompt transport.
+ * assert prompt transport. FIXTURE_CWD_OUT additionally records the child's
+ * cwd plus any CLAUDE.md / AGENTS.md found there (bridge workspace checks).
  */
 
 const RECORDING_PREAMBLE = `const fs = require('node:fs');
+const path = require('node:path');
 let stdinData = '';
 process.stdin.on('data', (d) => (stdinData += d));
 process.stdin.on('end', () => {
   if (process.env.FIXTURE_STDIN_OUT) fs.writeFileSync(process.env.FIXTURE_STDIN_OUT, stdinData, 'utf8');
   if (process.env.FIXTURE_ARGV_OUT) fs.writeFileSync(process.env.FIXTURE_ARGV_OUT, JSON.stringify(process.argv.slice(2)), 'utf8');
+  if (process.env.FIXTURE_CWD_OUT) {
+    const read = (f) => { try { return fs.readFileSync(path.join(process.cwd(), f), 'utf8'); } catch { return null; } };
+    fs.writeFileSync(process.env.FIXTURE_CWD_OUT, JSON.stringify({ cwd: process.cwd(), claudeMd: read('CLAUDE.md'), agentsMd: read('AGENTS.md') }), 'utf8');
+  }
   main();
 });
 `;

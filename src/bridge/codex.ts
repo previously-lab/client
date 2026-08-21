@@ -56,7 +56,7 @@ export const codexAdapter: BridgeAdapter = {
     return runNdjsonAdapter(
       'codex',
       [argv[0] ?? 'codex', ...args],
-      { input: '', timeoutMs: opts.timeoutMs, signal: opts.signal },
+      { input: '', timeoutMs: opts.timeoutMs, signal: opts.signal, cwd: opts.cwd },
       extractCodexResult,
     );
   },

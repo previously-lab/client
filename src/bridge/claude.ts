@@ -73,7 +73,7 @@ export const claudeAdapter: BridgeAdapter = {
     return runNdjsonAdapter(
       'claude',
       [argv[0] ?? 'claude', ...args],
-      { input: buildPrompt(task), timeoutMs: opts.timeoutMs, signal: opts.signal },
+      { input: buildPrompt(task), timeoutMs: opts.timeoutMs, signal: opts.signal, cwd: opts.cwd },
       extractClaudeResult,
     );
   },

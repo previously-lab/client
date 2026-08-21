@@ -57,7 +57,7 @@ export async function terminateProcess(pid: number, graceTimeoutMs: number): Pro
   }
   if (await waitForExit(pid, graceTimeoutMs)) return;
   if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
   } else {
     try {
       process.kill(pid, 'SIGKILL');
@@ -88,6 +88,7 @@ export function spawnKernelDetached({ serverJs, cwd, env, logPath }: SpawnKernel
     env: { ...process.env, ...env },
     detached: true,
     stdio: ['ignore', out, out],
+    windowsHide: true,
   });
   // The fd is duplicated into the child; the parent must not hold it open
   // (on Windows a held fd would lock the log file against deletion).
@@ -117,6 +118,7 @@ export function spawnScribeDetached({ cliEntry, logPath }: SpawnScribeOptions): 
     env: process.env,
     detached: true,
     stdio: ['ignore', out, out],
+    windowsHide: true,
   });
   closeSync(out);
   child.unref();

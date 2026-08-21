@@ -1,38 +1,48 @@
 import { parseArgs } from 'node:util';
+import { BRIDGE_AGENTS, type BridgeAgent } from '../bridge/types.js';
+import { loadConfig } from '../lib/config.js';
+import { findOnPath } from '../lib/detect.js';
 import { diffLines } from '../lib/diff.js';
-import {
-  ALL_TARGETS,
-  applyTarget,
-  serverEntry,
-  type ApplyResult,
-  type InstallTarget,
-} from '../lib/install-targets.js';
+import { resolvePaths } from '../lib/paths.js';
+import { applySkillTarget, type SkillApplyResult } from '../lib/skills.js';
 
 function usage(mode: 'install' | 'uninstall'): void {
-  console.log(`previously ${mode} — ${mode === 'install' ? 'register' : 'remove'} the local MCP server ${
-    mode === 'install' ? 'in' : 'from'
-  } agent configs
+  console.log(`previously ${mode} — ${mode === 'install' ? 'write' : 'remove'} the "Previously memory" skill pack ${
+    mode === 'install' ? 'for' : 'from'
+  } local agent CLIs
 
-Usage: previously ${mode} --claude | --codex | --kimi | --all [options]
+Usage: previously ${mode} [--claude] [--codex] [--kimi] [--all] [options]
 
-Targets:
-  --claude    Claude Code: ~/.claude.json (or <dir>/.mcp.json with --project)
-  --codex     Codex: ~/.codex/config.toml
-  --kimi      Kimi Code: ~/.kimi-code/mcp.json (or <dir>/.kimi-code/mcp.json with --project)
-  --all       All of the above
+Targets (default: every agent CLI detected on PATH):
+  --claude    Claude Code: ~/.claude/skills/previously-memory/SKILL.md
+  --codex     Codex: a sentinel-delimited block in the shared ~/.codex/AGENTS.md
+  --kimi      Kimi Code: ~/.kimi/skills/previously-memory/SKILL.md
+  --all       All three agents, detected or not
 
 Options:
-  --project <dir>  Scope Claude/Kimi registration to a project directory
-  --dry-run        Print the resulting diff without writing anything
+  --dry-run   Print the resulting diff without writing anything
 
-Only Previously's own entries are touched; other servers' config is preserved.
-Before the first modification each file is backed up once to <file>.bak.
+Only Previously's own files / sentinel block are touched; foreign content is
+preserved verbatim. Before the first modification each file is backed up once
+to <file>.bak. Re-running converges idempotently.
+
+Note: the read-only MCP server (previously mcp) is retired — this skill pack
+replaces it. Bridged agents also get the same instructions per call via the
+bridge-exec temp workspace (CLAUDE.md / AGENTS.md), no install needed.
 `);
 }
 
+/** Dependency seams so tests never touch the real PATH or home. */
+export interface InstallDeps {
+  home?: string;
+  memoryRoot?: string;
+  pathEnv?: string;
+  platform?: NodeJS.Platform;
+}
+
 interface ParsedFlags {
-  targets: InstallTarget[];
-  project?: string;
+  explicit: BridgeAgent[];
+  all: boolean;
   dryRun: boolean;
 }
 
@@ -44,30 +54,30 @@ function parseFlags(args: string[]): ParsedFlags {
       codex: { type: 'boolean' },
       kimi: { type: 'boolean' },
       all: { type: 'boolean' },
-      project: { type: 'string' },
       'dry-run': { type: 'boolean' },
     },
   });
-
-  const targets: InstallTarget[] = [];
-  if (values.all === true) {
-    targets.push(...ALL_TARGETS);
-  } else {
-    if (values.claude === true) targets.push('claude');
-    if (values.codex === true) targets.push('codex');
-    if (values.kimi === true) targets.push('kimi');
-  }
-  if (targets.length === 0) {
-    throw new Error('requires at least one target: --claude / --codex / --kimi / --all');
-  }
-  return {
-    targets,
-    ...(values.project !== undefined ? { project: values.project } : {}),
-    dryRun: values['dry-run'] === true,
-  };
+  const explicit: BridgeAgent[] = [];
+  if (values.claude === true) explicit.push('claude');
+  if (values.codex === true) explicit.push('codex');
+  if (values.kimi === true) explicit.push('kimi');
+  return { explicit, all: values.all === true, dryRun: values['dry-run'] === true };
 }
 
-function report(results: ApplyResult[], dryRun: boolean): void {
+/**
+ * Target selection: explicit flags win; otherwise every bridge agent CLI
+ * found on PATH (per src/lib/detect.ts conventions).
+ */
+export function selectTargets(
+  flags: ParsedFlags,
+  deps: Pick<InstallDeps, 'pathEnv' | 'platform'> = {},
+): BridgeAgent[] {
+  if (flags.all) return [...BRIDGE_AGENTS];
+  if (flags.explicit.length > 0) return flags.explicit;
+  return BRIDGE_AGENTS.filter((agent) => findOnPath(agent, deps) !== null);
+}
+
+function report(results: SkillApplyResult[], dryRun: boolean): void {
   for (const r of results) {
     const verb =
       r.action === 'unchanged'
@@ -88,7 +98,7 @@ function report(results: ApplyResult[], dryRun: boolean): void {
   if (dryRun) console.log('(dry run — nothing written)');
 }
 
-async function runMode(args: string[], mode: 'install' | 'uninstall'): Promise<number> {
+async function runMode(args: string[], mode: 'install' | 'uninstall', deps: InstallDeps = {}): Promise<number> {
   if (args.includes('--help') || args.includes('-h')) {
     usage(mode);
     return 0;
@@ -103,17 +113,23 @@ async function runMode(args: string[], mode: 'install' | 'uninstall'): Promise<n
     return 1;
   }
 
-  const entry = mode === 'install' ? serverEntry() : null;
-  const results: ApplyResult[] = [];
-  for (const target of flags.targets) {
+  const memoryRoot = deps.memoryRoot ?? loadConfig(resolvePaths()).memoryRoot;
+  const targets = selectTargets(flags, deps);
+  if (targets.length === 0) {
+    console.log('No agent CLIs detected on PATH (claude / codex / kimi).');
+    console.log('Pass --claude / --codex / --kimi / --all to install anyway.');
+    return 0;
+  }
+
+  const results: SkillApplyResult[] = [];
+  for (const target of targets) {
     try {
       results.push(
-        applyTarget(
-          target,
-          entry,
-          flags.project !== undefined ? { project: flags.project } : {},
-          { dryRun: flags.dryRun },
-        ),
+        applySkillTarget(target, mode, {
+          memoryRoot,
+          dryRun: flags.dryRun,
+          ...(deps.home !== undefined ? { home: deps.home } : {}),
+        }),
       );
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
@@ -124,12 +140,12 @@ async function runMode(args: string[], mode: 'install' | 'uninstall'): Promise<n
   return 0;
 }
 
-/** `previously install` — register the MCP server into agent configs. */
-export async function run(args: string[]): Promise<number> {
-  return runMode(args, 'install');
+/** `previously install` — write the memory skill pack for local agent CLIs. */
+export async function run(args: string[], deps: InstallDeps = {}): Promise<number> {
+  return runMode(args, 'install', deps);
 }
 
-/** `previously uninstall` — remove exactly our entries from agent configs. */
-export async function runUninstall(args: string[]): Promise<number> {
-  return runMode(args, 'uninstall');
+/** `previously uninstall` — remove exactly our skill files / sentinel block. */
+export async function runUninstall(args: string[], deps: InstallDeps = {}): Promise<number> {
+  return runMode(args, 'uninstall', deps);
 }

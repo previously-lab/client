@@ -54,7 +54,7 @@ export interface ExecResult {
 export type ExecFn = (cmd: string, args: string[], opts?: { cwd?: string }) => ExecResult;
 
 export const defaultExec: ExecFn = (cmd, args, opts) => {
-  const res = spawnSync(cmd, args, { cwd: opts?.cwd, encoding: 'utf8' });
+  const res = spawnSync(cmd, args, { cwd: opts?.cwd, encoding: 'utf8', windowsHide: true });
   return {
     status: res.status,
     stdout: res.stdout ?? '',

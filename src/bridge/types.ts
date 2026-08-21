@@ -42,6 +42,11 @@ export interface DispatchOptions {
   timeoutMs: number;
   /** Forwarded from the bridge-exec process so SIGTERM/SIGINT kills the CLI. */
   signal?: AbortSignal;
+  /**
+   * Working directory for the CLI child. bridge-exec sets this to a per-call
+   * temp workspace carrying the memory skill file (CLAUDE.md / AGENTS.md).
+   */
+  cwd?: string;
 }
 
 /** One adapter per subscription CLI: task in → final result text out. */

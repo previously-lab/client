@@ -1,4 +1,5 @@
 import { parseArgs } from 'node:util';
+import { rmSync } from 'node:fs';
 import {
   BridgeError,
   dispatchBridgeTask,
@@ -9,6 +10,7 @@ import {
 } from '../bridge/index.js';
 import { loadConfig } from '../lib/config.js';
 import { resolvePaths } from '../lib/paths.js';
+import { materializeBridgeWorkspace } from '../lib/skills.js';
 
 /**
  * `previously bridge-exec` — the kernel-side half of the subscription bridge
@@ -23,7 +25,15 @@ import { resolvePaths } from '../lib/paths.js';
  * The kernel treats exit 0 + empty stdout as malformed, so adapters must
  * never succeed with empty output (they raise 'empty-result' instead).
  *
- * Agent selection: --agent claude|codex|kimi, else config executionBackend.
+ * Agent selection: --agent claude|codex|kimi, else the per-spawn
+ * PREVIOUSLY_BRAIN_AGENT env override (the kernel sets it per chat call),
+ * else config executionBackend.
+ *
+ * Before spawning, the selected CLI gets a per-call temp workspace (cwd)
+ * carrying the "Previously memory" skill document as its cwd-convention
+ * instruction file (CLAUDE.md for claude, AGENTS.md for codex/kimi), with
+ * MEMORY_ROOT filled from config. The workspace is removed in a finally
+ * block after the call.
  */
 
 export interface BridgeExecOptions {
@@ -69,6 +79,11 @@ function resolveAgent(flag: string | undefined, configured: string | null): Brid
     if (isBridgeAgent(flag)) return flag;
     throw new Error(`Unknown --agent value: ${flag} (expected claude|codex|kimi)`);
   }
+  const envAgent = process.env.PREVIOUSLY_BRAIN_AGENT?.trim();
+  if (envAgent !== undefined && envAgent !== '') {
+    if (isBridgeAgent(envAgent)) return envAgent;
+    throw new Error(`Unknown PREVIOUSLY_BRAIN_AGENT value: ${envAgent} (expected claude|codex|kimi)`);
+  }
   if (configured !== null && isBridgeAgent(configured)) return configured;
   if (configured !== null) {
     throw new Error(
@@ -98,14 +113,21 @@ export async function run(args: string[], opts: BridgeExecOptions = {}): Promise
 
   let task: BridgeTask;
   let agent: BridgeAgent;
+  let memoryRoot: string;
   try {
     task = parsePayload(raw);
     const config = loadConfig(resolvePaths());
     agent = resolveAgent(values.agent, config.executionBackend);
+    memoryRoot = config.memoryRoot;
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     return 2;
   }
+
+  // Per-call workspace: the agent CLI runs with cwd = a temp dir carrying
+  // its cwd-convention instruction file (CLAUDE.md / AGENTS.md) filled with
+  // the memory skill document — zero user config needed on the agent side.
+  const workspace = materializeBridgeWorkspace(agent, memoryRoot);
 
   // Forward termination to the CLI child: kill-on-SIGTERM, no orphans.
   const controller = new AbortController();
@@ -116,6 +138,7 @@ export async function run(args: string[], opts: BridgeExecOptions = {}): Promise
     const text = await dispatchBridgeTask(agent, task, {
       timeoutMs: resolveTimeoutMs(agent),
       signal: controller.signal,
+      cwd: workspace.dir,
     });
     console.log(text);
     return 0;
@@ -129,5 +152,15 @@ export async function run(args: string[], opts: BridgeExecOptions = {}): Promise
   } finally {
     process.removeListener('SIGINT', onSignal);
     process.removeListener('SIGTERM', onSignal);
+    // Workspace cleanup is best-effort: a locked temp dir must never fail a
+    // call that already produced its result.
+    try {
+      rmSync(workspace.dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch (err) {
+      console.error(
+        `bridge-exec: could not remove temp workspace ${workspace.dir} ` +
+          `(${err instanceof Error ? err.message : err}); leaving it for the OS temp cleaner`,
+      );
+    }
   }
 }
