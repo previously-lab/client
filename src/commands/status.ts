@@ -1,12 +1,7 @@
-import { existsSync } from 'node:fs';
-import { BRIDGE_AGENTS, checkCliPresence } from '../bridge/index.js';
-import { loadConfig } from '../lib/config.js';
-import { isPortOpen } from '../lib/health.js';
-import { resolveKernel } from '../lib/kernel.js';
+import { getKernelLine } from '../lib/version-policy.js';
+import { collectStatus, nextStepSuggestion, type SystemStatus } from '../lib/system-status.js';
 import { resolvePaths } from '../lib/paths.js';
-import { isProcessAlive, readPidFile } from '../lib/process.js';
-import { checkCompat, getKernelLine } from '../lib/version-policy.js';
-import { readScribeStatus, type ScribeStatus } from '../scribe/status.js';
+import type { ScribeStatus } from '../scribe/status.js';
 import { SCRIBE_SOURCES, type ScribeSource } from '../scribe/types.js';
 
 function formatScribeSource(source: ScribeSource, status: ScribeStatus | null): string {
@@ -23,75 +18,70 @@ function formatScribeSource(source: ScribeSource, status: ScribeStatus | null): 
  * summary. Exit code reflects the worst subsystem honestly (§9): 0 only when
  * the kernel is running AND reachable AND version-compatible AND the scribe
  * is alive alongside it with no recorded errors.
+ *
+ * All aggregation lives in lib/system-status.ts (collectStatus).
  */
 export async function run(args: string[]): Promise<number> {
   void args;
-  const paths = resolvePaths();
-  const config = loadConfig(paths);
-
-  const pid = readPidFile(paths.pidPath);
-  const alive = pid !== null && isProcessAlive(pid);
-  const reachable = await isPortOpen(config.port, config.hostname, 1_500);
-
-  const kernel = resolveKernel(config.kernelDir, paths);
-  const compat = kernel.version !== null ? checkCompat(kernel.version) : null;
+  const s: SystemStatus = await collectStatus(resolvePaths());
+  const { paths, config } = s;
 
   console.log(`Home:      ${paths.home}`);
   console.log(
-    `Config:    ${existsSync(paths.configPath) ? paths.configPath : '(not created — run `previously init`)'}`,
+    `Config:    ${s.initialized ? paths.configPath : '(not created — run `previously init`)'}`,
   );
-  console.log(`Kernel:    ${alive ? `running (pid ${pid})` : 'not running'}`);
-  if (kernel.version !== null) {
+  console.log(`Kernel:    ${s.kernelAlive ? `running (pid ${s.kernelPid})` : 'not running'}`);
+  if (s.kernelVersion !== null) {
     console.log(
-      `Version:   ${kernel.version} (line ${getKernelLine()}.x — ${compat!.ok ? 'compatible' : 'INCOMPATIBLE'}, source: ${kernel.source})`,
+      `Version:   ${s.kernelVersion} (line ${getKernelLine()}.x — ${s.compat!.ok ? 'compatible' : 'INCOMPATIBLE'}, source: ${s.kernelSource})`,
     );
   } else {
-    console.log(`Version:   unknown (no installed kernel pointer; dir: ${kernel.dir})`);
+    console.log(`Version:   unknown (no installed kernel pointer; dir: ${s.kernelDir})`);
   }
-  console.log(`Port:      ${config.hostname}:${config.port} ${reachable ? 'reachable' : 'unreachable'}`);
+  console.log(`Port:      ${config.hostname}:${config.port} ${s.reachable ? 'reachable' : 'unreachable'}`);
   console.log(`Storage:   ${config.storage} (memory root: ${config.memoryRoot})`);
   console.log(`Backend:   ${config.executionBackend ?? '(unset)'}`);
-  for (const agent of BRIDGE_AGENTS) {
-    const presence = checkCliPresence(agent);
+  for (const bridge of s.bridges) {
     console.log(
-      `  bridge ${agent}: ${presence.found ? `found (${presence.detail})` : `not found — ${presence.detail}`}`,
+      `  bridge ${bridge.agent}: ${bridge.found ? `found (${bridge.detail})` : `not found — ${bridge.detail}`}`,
     );
   }
 
-  const scribePid = readPidFile(paths.scribePidPath);
-  const scribeAlive = scribePid !== null && isProcessAlive(scribePid);
-  const scribeStatus = readScribeStatus(paths.scribeStatusPath);
-  console.log(`Scribe:    ${scribeAlive ? `running (pid ${scribePid})` : 'not running'}`);
+  console.log(`Scribe:    ${s.scribeAlive ? `running (pid ${s.scribePid})` : 'not running'}`);
   for (const source of SCRIBE_SOURCES) {
-    console.log(formatScribeSource(source, scribeStatus));
+    console.log(formatScribeSource(source, s.scribeStatus));
   }
-  if (scribePid !== null && !scribeAlive) {
-    console.log(`Note:      stale scribe pid file at ${paths.scribePidPath} (pid ${scribePid} is not running)`);
+  if (s.scribePid !== null && !s.scribeAlive) {
+    console.log(`Note:      stale scribe pid file at ${paths.scribePidPath} (pid ${s.scribePid} is not running)`);
   }
-  if (scribeStatus !== null && scribeStatus.errors.length > 0) {
-    const last = scribeStatus.errors[scribeStatus.errors.length - 1]!;
-    console.log(`Scribe errors: ${scribeStatus.errors.length} recent (latest: ${last.file}: ${last.message})`);
+  if (s.scribeStatus !== null && s.scribeStatus.errors.length > 0) {
+    const last = s.scribeStatus.errors[s.scribeStatus.errors.length - 1]!;
+    console.log(`Scribe errors: ${s.scribeStatus.errors.length} recent (latest: ${last.file}: ${last.message})`);
   }
 
-  if (pid !== null && !alive) {
-    console.log(`Note:      stale pid file at ${paths.pidPath} (pid ${pid} is not running)`);
+  if (s.kernelPid !== null && !s.kernelAlive) {
+    console.log(`Note:      stale pid file at ${paths.pidPath} (pid ${s.kernelPid} is not running)`);
   }
-  if (compat && !compat.ok) {
-    console.error(compat.message);
+
+  const suggestion = nextStepSuggestion(s);
+  if (suggestion !== null) console.log(`Next:      ${suggestion}`);
+
+  if (s.compat && !s.compat.ok) {
+    console.error(s.compat.message);
     return 1;
   }
 
-  if (!(alive && reachable)) return 1;
+  if (!(s.kernelAlive && s.reachable)) return 1;
 
   // Kernel healthy; the scribe is part of a healthy `start`ed system (§2/§3):
   // a dead scribe beside a live kernel, or recorded scribe errors, is a
   // degraded system and must not report success.
-  if (!scribeAlive) {
+  if (!s.scribeAlive) {
     console.error('Scribe is not running while the kernel is — degraded. Restart with `previously stop && previously start`.');
     return 1;
   }
-  if (scribeStatus !== null && scribeStatus.errors.length > 0) {
-    console.error(`Scribe has ${scribeStatus.errors.length} recorded error(s) — degraded. See \`previously logs\` and the status file.`);
+  if (s.scribeStatus !== null && s.scribeStatus.errors.length > 0) {
+    console.error(`Scribe has ${s.scribeStatus.errors.length} recorded error(s) — degraded. See \`previously logs\` and the status file.`);
     return 1;
   }
   return 0;

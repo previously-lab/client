@@ -2,6 +2,19 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { resolvePaths, type PreviouslyPaths } from './paths.js';
 
+/**
+ * Brain (kernel main model) configuration. Contract mirrored by the agent
+ * repo — keep strictly in sync:
+ * - undefined: current behavior, the kernel relies on keys already in its env.
+ * - { type: 'api-key', env, model? }: reuse the env var `env` (value lives in
+ *   the process env or in apiKeys below — never duplicated into `brain`).
+ * - { type: 'bridge', agent }: pure-subscription mode, an installed agent
+ *   CLI acts as the brain.
+ */
+export type BrainConfig =
+  | { type: 'api-key'; env: string; model?: string }
+  | { type: 'bridge'; agent: 'claude' | 'codex' | 'kimi' };
+
 export interface PreviouslyConfig {
   storage: 'local';
   memoryRoot: string;
@@ -19,6 +32,15 @@ export interface PreviouslyConfig {
    * Set via `previously init --backend`; null means unset.
    */
   executionBackend: string | null;
+  /** Brain selection; absent means "kernel uses whatever keys its env has". */
+  brain?: BrainConfig;
+  /**
+   * Manually entered API keys, keyed by env var name (e.g. DEEPSEEK_API_KEY).
+   * Plaintext in config.json is accepted for the local MVP — the file stays
+   * under the user's own ~/.previously. start injects each entry into the
+   * kernel's environment.
+   */
+  apiKeys?: Record<string, string>;
 }
 
 export const DEFAULT_PORT = 3210;

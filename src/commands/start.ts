@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { loadConfig } from '../lib/config.js';
 import { isPortOpen, waitForHealthy } from '../lib/health.js';
+import { buildKernelEnv } from '../lib/kernel-env.js';
 import { resolveKernel } from '../lib/kernel.js';
 import { resolvePaths } from '../lib/paths.js';
 import { checkCompat } from '../lib/version-policy.js';
@@ -77,14 +78,7 @@ export async function run(args: string[], opts: StartOptions = {}): Promise<numb
     serverJs,
     cwd: kernelDir,
     logPath: paths.kernelLogPath,
-    env: {
-      PREVIOUSLY_MODE: 'client',
-      STORAGE: 'local',
-      MEMORY_ROOT: config.memoryRoot,
-      WORKFLOW_TARGET_WORLD: 'local',
-      PORT: String(config.port),
-      HOSTNAME: config.hostname,
-    },
+    env: buildKernelEnv(config, paths),
   });
   writePidFile(paths.pidPath, pid);
 

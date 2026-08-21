@@ -1,9 +1,15 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { createInterface } from 'node:readline/promises';
-import { defaultConfig, saveConfig } from '../lib/config.js';
-import { resolvePaths } from '../lib/paths.js';
 import { BRIDGE_AGENTS } from '../bridge/types.js';
+import { defaultConfig, saveConfig } from '../lib/config.js';
+import { resolvePaths, type PreviouslyPaths } from '../lib/paths.js';
+
+/**
+ * `previously init` — non-interactive first-run setup: create the
+ * ~/.previously layout and write a minimal default config.json. No prompts
+ * (all interactive UX lives in the kernel's Web UI); flags only, so scripts
+ * and CI can call it safely.
+ */
 
 const BACKEND_CHOICES = [...BRIDGE_AGENTS, 'api-key', 'none'] as const;
 type BackendChoice = (typeof BACKEND_CHOICES)[number];
@@ -13,42 +19,18 @@ function normalizeBackend(value: string): BackendChoice | null {
   return (BACKEND_CHOICES as readonly string[]).includes(v) ? (v as BackendChoice) : null;
 }
 
-/**
- * Resolve the execution backend: --backend flag wins; on an interactive TTY
- * ask once; otherwise stay non-interactive-friendly and leave it unset.
- * 'none' is the explicit opt-out (stored as null).
- */
-async function resolveBackend(flag: string | undefined): Promise<string | null> {
-  if (flag !== undefined) {
-    const choice = normalizeBackend(flag);
-    if (choice === null) {
-      throw new Error(`Unknown --backend value: ${flag} (expected ${BACKEND_CHOICES.join('|')})`);
-    }
-    return choice === 'none' ? null : choice;
-  }
-  if (!process.stdin.isTTY) return null;
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const answer = await rl.question(
-      `Execution backend [${BACKEND_CHOICES.join('/')}] (subscription bridge CLI, or api-key): `,
-    );
-    const choice = normalizeBackend(answer);
-    if (choice === null) {
-      console.log(`Unrecognized choice "${answer.trim()}" — leaving executionBackend unset.`);
-      return null;
-    }
-    return choice === 'none' ? null : choice;
-  } finally {
-    rl.close();
+function ensureLayout(paths: PreviouslyPaths): void {
+  for (const dir of [
+    paths.home,
+    paths.memoryDir,
+    paths.kernelDir,
+    paths.kernelVersionsDir,
+    paths.logsDir,
+  ]) {
+    mkdirSync(dir, { recursive: true });
   }
 }
 
-/**
- * `previously init` — bootstrap the ~/.previously layout and write a default
- * config.json. Idempotent: an existing config is never overwritten unless
- * --force is passed. `--backend claude|codex|kimi|api-key|none` sets the
- * execution backend non-interactively.
- */
 export async function run(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
@@ -59,28 +41,23 @@ export async function run(args: string[]): Promise<number> {
   });
 
   const paths = resolvePaths();
-  for (const dir of [
-    paths.home,
-    paths.memoryDir,
-    paths.kernelDir,
-    paths.kernelVersionsDir,
-    paths.logsDir,
-  ]) {
-    mkdirSync(dir, { recursive: true });
+
+  let backend: string | null = null;
+  if (values.backend !== undefined) {
+    const choice = normalizeBackend(values.backend);
+    if (choice === null) {
+      console.error(`Unknown --backend value: ${values.backend} (expected ${BACKEND_CHOICES.join('|')})`);
+      return 1;
+    }
+    backend = choice === 'none' ? null : choice;
   }
+
+  ensureLayout(paths);
 
   if (existsSync(paths.configPath) && !values.force) {
     console.log(`Previously is already initialized at ${paths.home}`);
     console.log(`Existing config kept: ${paths.configPath} (use --force to overwrite)`);
     return 0;
-  }
-
-  let backend: string | null;
-  try {
-    backend = await resolveBackend(values.backend);
-  } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
-    return 1;
   }
 
   const config = defaultConfig(paths);
