@@ -4,7 +4,7 @@ Previously 的本地客户端：同一内核的本地实例 + 本地感知末梢
 
 - 本地运行 Previously 内核（云端 [agent 仓库](https://github.com/previously-lab/agent) 的 standalone 产物）
 - 抄录本机其他 AI Agent（Claude Code / Codex / Kimi Code 等）的对话为时间片
-- 通过 MCP 向本机 Agent 暴露只读记忆
+- 以「记忆 Skill」向本机 Agent 提供只读记忆访问说明（安装到各家 skills/指令文件，桥接调用时经临时工作目录注入）
 - 可复用本地已有的 Agent 订阅作为执行后端；~~通过 Connect 接受云端 Previously 的指挥~~（Connect 暂缓封存，见设计文档）
 
 设计文档见 [docs/design/v0.1-client.md](docs/design/v0.1-client.md)。
@@ -31,13 +31,42 @@ Point `PREVIOUSLY_HOME` at a scratch directory to avoid touching your real `~/.p
 PREVIOUSLY_HOME=/tmp/prev-test node dist/cli.js init
 ```
 
-Current commands (batches C1 + C1.5 + C2 + C3 + C4 + C6): `init`, `start`, `stop`, `status`, `logs`, `kernel`, `upgrade`, `mcp`, `install`, `uninstall`, `watch`, `scribe`, `bridge-exec`.
+### 一键本地开发（client + 内核一起起）
+
+把 agent（内核）仓库克隆为本仓库的**平级目录**——可识别的目录名：`Aftrbrez` / `agent` / `previously-agent` / `previously-kernel` / `kernel`（大小写不敏感，并会校验它确实是 agent 仓库：package.json 含 `next` 依赖且有 `src/lib/version/constants.ts`）。然后：
+
+```bash
+pnpm dev
+```
+
+一条命令完成：找到 agent 仓库 → 构建其 standalone 内核产物 → 构建本 CLI → 首次运行时自动初始化 `~/.previously`（探测本机 agent CLI，优先配置为纯订阅 bridge 大脑）→ 安装新构建的内核 → 交给裸 `previously`（启动 + 打开浏览器）。
+
+- 识别到 **0 个** agent 仓库：报错并提示克隆到平级目录；识别到**多个**：列出候选并要求明确指定（不替你猜）。指定方式：在本仓库根目录建 `dev.env`（已 gitignore，每台机器各自的本地文件，格式 `KEY=VALUE`、`#` 注释），写入 `PREVIOUSLY_AGENT_REPO=<绝对路径>`；也可以用同名 shell 环境变量，环境变量优先于 `dev.env`。不需要、也不应设置系统/用户级全局环境变量。
+- `pnpm dev --fast`：跳过内核构建，复用 agent 仓库已有的 `.next/standalone`（只改了 client 时用）。
+- `pnpm dev --no-start`：只构建 + 初始化 + 装内核，不启动服务（脚本/CI 用）。
+- 每次安装使用版本线内的时间戳 patch 版本（如 `0.8.<epoch>`），旧的时间戳版本会自动清理；回滚仍可用 `previously kernel rollback`。
+- 只想调试 agent 仓库本身：在其目录 `pnpm dev`(Next dev server),client 模式的设置区块在 `PREVIOUSLY_MODE=client` 下才会出现在设置页。
+
+## 快速开始
+
+```bash
+npm i -g previously-client   # 或 npx
+previously                   # 唯一需要记住的命令
+```
+
+裸 `previously` 是一个状态机：未初始化时提示 `previously init` 并以退出码 1 结束；已初始化但未运行则自动启动服务、打开浏览器并打印一段纯文本摘要（运行内容、Web UI 地址、如何停止）；已在运行则直接打开浏览器并打印摘要。所有交互式 UX 都在内核 Web UI 里，CLI 只保留生命周期/运维能力。非 TTY 环境（CI/脚本）自动降级为纯文本：启动后仅报告地址，已在运行时等同于 `previously status`。`PREVIOUSLY_NO_OPEN=1` 禁用自动打开浏览器。
+
+命令面分两层——日常：`（无命令）` / `start` / `stop` / `status` / `logs` / `open`；高级：`init` / `kernel` / `upgrade` / `install` / `uninstall` / `watch` / `scribe` / `bridge-exec`。
+
+config.json 契约（与 agent 仓库严格对齐；`previously init` 只写最小默认值，大脑等运行时配置在内核 Web UI 设置页维护）：`brain?: { "type": "api-key", "env": string, "model"?: string } | { "type": "bridge", "agent": "claude"|"codex"|"kimi" }`（缺省 = 内核沿用环境变量里的 key）；`apiKeys?: Record<string, string>`（手动录入的 key，本地 MVP 明文存储）。`start` 拉起内核时追加注入：`PREVIOUSLY_HOME`、`apiKeys` 每个键值、bridge 大脑时的 `PREVIOUSLY_BRAIN=bridge` + `PREVIOUSLY_BRAIN_AGENT`、api-key 大脑时的 key 值与 `PREVIOUSLY_DEFAULT_MODEL`（契约预留，内核可暂不消费）。
+
+Current commands (batches C1 + C1.5 + C2 + C3 + C4 + C6 + C7): `（裸命令 launch）`, `init`, `start`, `stop`, `status`, `logs`, `open`, `kernel`, `upgrade`, `install`, `uninstall`, `watch`, `scribe`, `bridge-exec`.
 
 内核供应链（设计文档 §10）：`previously kernel install --repo <git-url> --ref <branch|tag|sha>` 从 agent 仓库浅克隆并构建 standalone 产物，安装到 `~/.previously/kernel/versions/<version>/`，原子切换 `kernel/current.json` 指针，可 `previously kernel rollback` 回滚。版本策略：client 内嵌内核 minor 版本线（package.json `previously.kernelLine`，当前 `0.8`），内核 major.minor 必须与版本线一致，patch 自由；`previously upgrade` 装版本线内最新 patch，跨 minor 拒绝并提示先升级 client。测试/逃逸通道：`previously kernel install --from <dir> --version <x.y.z>` 直接把本地 standalone 目录当作已构建产物安装。`start`/`status` 经指针解析内核目录并做兼容校验；config `kernelDir` 为显式覆盖。
 
 Repo builds require `git` and `pnpm` on PATH (shell-outs via `node:child_process`). Without any installed kernel, `start` falls back to a hand-placed standalone build in `~/.previously/kernel/` and fails with an actionable error if none exists.
 
-能力出口（设计文档 §6）：`previously mcp serve` 以 stdio MCP server（换行分隔的 JSON-RPC 2.0，零依赖手写实现）暴露只读记忆工具 `read_timeline` / `read_slice` / `list_strands` / `read_strand` / `search_memory`，直接读 memory 目录；slice id 严格校验防路径穿越，缺失/非法输入一律如实报结构化错误。`previously install --claude|--codex|--kimi|--all`（可选 `--project <dir>`、`--dry-run`）把 server 注册进各家配置（Claude: `.mcp.json`/`~/.claude.json` 的 `mcpServers`；Codex: `~/.codex/config.toml` 的 `[mcp_servers.previously]`；Kimi: `.kimi-code/mcp.json`/`~/.kimi-code/mcp.json`），spawn 命令为 node + dist/cli.js 绝对路径（Windows 可用），首次修改前备份一次 `<file>.bak`，只动自己的条目、幂等；`previously uninstall` 对称移除。
+能力出口：~~只读 MCP server~~（已退役，`previously mcp` 与 MCP 注册均已移除）→ 现为「Previously memory」skill 包。一份规范 markdown 文档（`src/lib/skills.ts`，含 `{{MEMORY_ROOT}}` 占位符）描述 Previously 是什么、memory 目录布局（`episodic/timeline.md`、`timeline/index.json`、`strands.json`、`slices/YYYY/MM/DD/HHMM/timeline/core.md`、月度 `_index.json`）、严格只读规则（持久化由内核/scribe 负责）、何时回忆、以及最终回复只含答复正文（在 Web 聊天 UI 中原样渲染）。两条投递通道：`previously install [--claude|--codex|--kimi|--all] [--dry-run]` 为每个已检测到的 agent CLI 写用户级格式——Claude: `~/.claude/skills/previously-memory/SKILL.md`（frontmatter name/description），Kimi: `~/.kimi/skills/previously-memory/SKILL.md`，Codex: 在共享的 `~/.codex/AGENTS.md` 里追加哨兵注释包裹的 Previously 块（绝不覆盖外来内容）；首次修改前备份一次 `<file>.bak`，幂等，`previously uninstall` 对称移除（只动自己的文件/块）。桥接通道：`bridge-exec` 每次调用前把同一文档按各家 cwd 约定物化到临时工作目录（claude → `CLAUDE.md`，codex/kimi → `AGENTS.md`），以该目录为 cwd 拉起 CLI，调用结束后清理——被桥接的 agent 零配置拿到记忆协议。
 
 感知末梢（设计文档 §5，批次 C3 + C6）：Scribe 抄录器用 chokidar 监听四家会话日志——`~/.claude/projects/**/*.jsonl`（Claude Code）、`~/.codex/sessions/**/*.jsonl`（Codex）、`~/.kimi-code/sessions/**/wire.jsonl`（Kimi Code）、`~/.gemini/tmp/*/chats/*.json`（Gemini CLI）——按字节偏移量 + 链式内容 hash 的增量游标（`~/.previously/scribe/cursors.json`，原子写入）把会话日志转录为与内核同构的时间片：`memory/episodic/slices/YYYY/MM/DD/HHMM/timeline/core.md` + 月度 `_index.json`（条目带 `source` / `sessionId` 来源标签）。解析按家隔离成插件（`src/scribe/parsers/`）；格式漂移的行不中断管线，降级为 `timeline/appendix.md` 原文附录并计入 parse errors（§5.3 格式税）。截断/轮换检测（文件变短即从 0 重读），重启从游标恢复，重复转录字节级幂等。Kimi 的 session id 从路径推导（`session_<uuid>/<agent>`，含子代理 wire）；Gemini checkpoint 是整文件 JSON 重写（非 append-only），按内容 hash 判定变化、每次全量重推导、slice 原地生长，retention 清理中途删文件走 unlink tombstone，不崩不报；未验证格式一律以 ASSUMED fixture 测试标注。`previously watch` 前台运行（`start` 会以独立 detached 进程自动拉起，自带 pid 文件与日志；`stop` 两者皆停；`status` 报告每个来源的文件数/事件数/最后事件时间/解析错误数）；`previously scribe once [--source claude-code|codex|kimi-code|gemini]` 一次性全量扫描，用于回填与调试。稳定性加固（C6）：watch 进程注册 `unhandledRejection` 兜底（如实写入 scribe 状态文件与日志，不静默崩退），watcher 对 root 出现/消失容错重挂；`status` 退出码反映最差子系统（内核健康但 scribe 已死、或 scribe 有记录错误 → 非零）；内核与 scribe 日志在拉起时按大小轮转（>10MB → `.1` 改名，保留 3 份）。
 
@@ -50,4 +79,4 @@ Repo builds require `git` and `pnpm` on PATH (shell-outs via `node:child_process
 | Kimi Code | `~/.kimi-code/sessions/**/agents/*/wire.jsonl` | verified（82 个真实 wire.jsonl，protocol 1.5） | `kimi -p --output-format stream-json` | verified（0.34.0 真实 prompt） |
 | Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | assumed（无本机安装；整文件 JSON checkpoint） | —（设计文档 §7 不含 Gemini 桥接） | n/a |
 
-订阅桥接（设计文档 §7，批次 C4）：`previously bridge-exec` 是内核 delegateTask 工具（agent 仓库 client mode，`PREVIOUSLY_BRIDGE_CMD`，默认 `previously bridge-exec`）的本地执行端，契约严格对齐：stdin 收 `{"task","context"}` JSON → 路由到适配器（`--agent claude|codex|kimi`，缺省取 config `executionBackend`，`previously init --backend ...` 设置）→ stdout 输出最终纯文本结果，exit 0 成功；失败一律非零退出 + stderr 诊断（§9 失败哲学：CLI 缺失 / 鉴权或配额报错原文 / 超时 / 流格式漂移，绝不伪造输出；exit 0 必伴随非空 stdout，否则内核视为 malformed）。三家适配器接口对齐（`dispatch({task, context}) → result text`）：Claude 走 `claude -p --output-format stream-json --verbose --max-turns N`（prompt 经 stdin 传入，避开 Windows argv 长度限制；N 默认 25，`PREVIOUSLY_BRIDGE_CLAUDE_MAX_TURNS=none` 关闭），Kimi 走 `kimi -p <prompt> --output-format stream-json`，Codex 走 `codex exec --json <prompt>`（v1 不做任何指令注入，AGENTS.md 是用户自己仓库的设置）。鉴权全部使用用户既有订阅 OAuth，client 不碰 API key。超时默认 9.5 分钟（略低于内核 delegateTask 默认 10 分钟，保证适配器先给出如实超时错误），`PREVIOUSLY_BRIDGE_<AGENT>_TIMEOUT_MS` / 全局 `PREVIOUSLY_BRIDGE_TIMEOUT_MS` 可调；bridge-exec 收到 SIGTERM/SIGINT 会转发杀死子进程。每家 CLI 可用 `PREVIOUSLY_BRIDGE_<AGENT>_CMD` 覆盖（可带额外前导参数，如 `PREVIOUSLY_BRIDGE_KIMI_CMD="kimi --auto"`）；`previously status` 展示 backend 与三家 CLI 的 PATH 探测结果（如实报 not found）。flag 与流格式假设：claude 2.1.204 与 kimi 0.34.0 已在本机真实验证（最小 prompt 各一次）；codex 本机无二进制，形状属假设、由 fixture CLI 测试覆盖。全部测试使用模拟各家 stream-json 输出的 fixture CLI（`tests/bridge-fixtures.ts`），e2e 通过真实构建的 `dist/cli.js bridge-exec` 逐字节验证内核契约。
+订阅桥接（设计文档 §7，批次 C4）：`previously bridge-exec` 是内核 delegateTask 工具（agent 仓库 client mode，`PREVIOUSLY_BRIDGE_CMD`，默认 `previously bridge-exec`）的本地执行端，契约严格对齐：stdin 收 `{"task","context"}` JSON → 路由到适配器（`--agent claude|codex|kimi`，否则取内核每次调用注入的 `PREVIOUSLY_BRAIN_AGENT` 环境变量，再缺省取 config `executionBackend`，`previously init --backend ...` 设置）→ stdout 输出最终纯文本结果，exit 0 成功；失败一律非零退出 + stderr 诊断（§9 失败哲学：CLI 缺失 / 鉴权或配额报错原文 / 超时 / 流格式漂移，绝不伪造输出；exit 0 必伴随非空 stdout，否则内核视为 malformed）。三家适配器接口对齐（`dispatch({task, context}) → result text`）：Claude 走 `claude -p --output-format stream-json --verbose --max-turns N`（prompt 经 stdin 传入，避开 Windows argv 长度限制；N 默认 25，`PREVIOUSLY_BRIDGE_CLAUDE_MAX_TURNS=none` 关闭），Kimi 走 `kimi -p <prompt> --output-format stream-json`，Codex 走 `codex exec --json <prompt>`；三家统一经临时工作目录注入记忆 skill（见上文「能力出口」：claude → `CLAUDE.md`，codex/kimi → `AGENTS.md`）。鉴权全部使用用户既有订阅 OAuth，client 不碰 API key。超时默认 9.5 分钟（略低于内核 delegateTask 默认 10 分钟，保证适配器先给出如实超时错误），`PREVIOUSLY_BRIDGE_<AGENT>_TIMEOUT_MS` / 全局 `PREVIOUSLY_BRIDGE_TIMEOUT_MS` 可调；bridge-exec 收到 SIGTERM/SIGINT 会转发杀死子进程。每家 CLI 可用 `PREVIOUSLY_BRIDGE_<AGENT>_CMD` 覆盖（可带额外前导参数，如 `PREVIOUSLY_BRIDGE_KIMI_CMD="kimi --auto"`）；`previously status` 展示 backend 与三家 CLI 的 PATH 探测结果（如实报 not found）。flag 与流格式假设：claude 2.1.204 与 kimi 0.34.0 已在本机真实验证（最小 prompt 各一次）；codex 本机无二进制，形状属假设、由 fixture CLI 测试覆盖。全部测试使用模拟各家 stream-json 输出的 fixture CLI（`tests/bridge-fixtures.ts`），e2e 通过真实构建的 `dist/cli.js bridge-exec` 逐字节验证内核契约。
