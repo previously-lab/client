@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { run as bridgeExec } from '../src/commands/bridge-exec.js';
@@ -15,14 +15,20 @@ describe('bridge-exec command', () => {
   let fixtures: FixtureClis;
   let stdout: string[];
   let stderr: string[];
+  let writes: string[];
 
   beforeEach(() => {
     home = useTempHome();
     fixtures = writeFixtureClis(join(home, 'fixtures'));
     stdout = [];
     stderr = [];
+    writes = [];
     vi.spyOn(console, 'log').mockImplementation((msg) => stdout.push(String(msg)));
     vi.spyOn(console, 'error').mockImplementation((msg) => stderr.push(String(msg)));
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -186,5 +192,169 @@ describe('bridge-exec command', () => {
     expect(rec.agentsMd).toContain(paths.memoryDir);
     expect(rec.claudeMd).toBeNull();
     expect(existsSync(rec.cwd)).toBe(false);
+  });
+});
+
+describe('bridge-exec protocol 2 (NDJSON event envelope)', () => {
+  let home: string;
+  let fixtures: FixtureClis;
+  let stdout: string[];
+  let stderr: string[];
+  let writes: string[];
+
+  beforeEach(() => {
+    home = useTempHome();
+    fixtures = writeFixtureClis(join(home, 'fixtures'));
+    stdout = [];
+    stderr = [];
+    writes = [];
+    vi.spyOn(console, 'log').mockImplementation((msg) => stdout.push(String(msg)));
+    vi.spyOn(console, 'error').mockImplementation((msg) => stderr.push(String(msg)));
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.PREVIOUSLY_BRIDGE_CLAUDE_CMD;
+    delete process.env.PREVIOUSLY_BRIDGE_KIMI_CMD;
+    delete process.env.PREVIOUSLY_BRIDGE_CODEX_CMD;
+    delete process.env.FIXTURE_ARGV_OUT;
+    cleanupTempHome(home);
+  });
+
+  const ndjsonLines = (): Record<string, unknown>[] =>
+    writes
+      .join('')
+      .split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+
+  it('streams {"event"} lines live, then a final {"protocol":2,result,events} envelope', async () => {
+    process.env.PREVIOUSLY_BRIDGE_CLAUDE_CMD = fixtureCmd(fixtures.claude);
+
+    const code = await bridgeExec(['--agent', 'claude'], {
+      stdin: JSON.stringify({ task: 't', context: null, protocol: 2 }),
+    });
+    expect(code).toBe(0);
+    // Result does NOT go through the legacy console.log path.
+    expect(stdout).toEqual([]);
+
+    const lines = ndjsonLines();
+    expect(lines).toHaveLength(3);
+    const streamed = lines.slice(0, -1).map((l) => l.event);
+    expect(streamed).toEqual([
+      { name: 'Bash', summary: 'ls -la', status: 'start' },
+      { name: 'Bash', summary: 'ls -la', status: 'ok' },
+    ]);
+    const envelope = lines[lines.length - 1]!;
+    expect(envelope.protocol).toBe(2);
+    expect(envelope.result).toBe('fixture claude answer');
+    // The envelope's events array is exactly what was streamed live.
+    expect(envelope.events).toEqual(streamed);
+  });
+
+  it('codex and kimi emit their derived events under protocol 2', async () => {
+    process.env.PREVIOUSLY_BRIDGE_CODEX_CMD = fixtureCmd(fixtures.codex);
+    const code = await bridgeExec(['--agent', 'codex'], {
+      stdin: JSON.stringify({ task: 't', protocol: 2 }),
+    });
+    expect(code).toBe(0);
+    let lines = ndjsonLines();
+    expect(lines.slice(0, -1).map((l) => l.event)).toEqual([
+      { name: 'command_execution', summary: 'ls -la', status: 'start' },
+      { name: 'command_execution', summary: 'ls -la', status: 'ok' },
+    ]);
+    expect(lines[lines.length - 1]!.result).toBe('fixture codex answer');
+
+    writes = [];
+    process.env.PREVIOUSLY_BRIDGE_KIMI_CMD = fixtureCmd(fixtures.kimi);
+    const code2 = await bridgeExec(['--agent', 'kimi'], {
+      stdin: JSON.stringify({ task: 't', protocol: 2 }),
+    });
+    expect(code2).toBe(0);
+    lines = ndjsonLines();
+    expect(lines.slice(0, -1).map((l) => l.event)).toEqual([
+      { name: 'Read', summary: 'package.json', status: 'start' },
+      { name: 'Read', summary: 'package.json', status: 'ok' },
+    ]);
+    expect(lines[lines.length - 1]!.result).toBe('fixture kimi answer');
+  });
+
+  it('a stream without tool events degrades honestly to an empty events array', async () => {
+    const noTools = join(home, 'fixtures', 'fixture-kimi-no-tools.js');
+    writeFileSync(
+      noTools,
+      `const lines = [
+        JSON.stringify({ role: 'meta', type: 'system.version', version: '0' }),
+        JSON.stringify({ role: 'assistant', content: 'plain kimi answer' }),
+      ];
+      process.stdout.write(lines.join('\\n') + '\\n');
+      `,
+      'utf8',
+    );
+    process.env.PREVIOUSLY_BRIDGE_KIMI_CMD = fixtureCmd(noTools);
+
+    const code = await bridgeExec(['--agent', 'kimi'], {
+      stdin: JSON.stringify({ task: 't', protocol: 2 }),
+    });
+    expect(code).toBe(0);
+    const lines = ndjsonLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toEqual({ protocol: 2, result: 'plain kimi answer', events: [] });
+  });
+
+  it('event cap: drops the tail and appends a synthetic omission note', async () => {
+    process.env.PREVIOUSLY_BRIDGE_CLAUDE_CMD = fixtureCmd(fixtures.claudeManyEvents);
+
+    const code = await bridgeExec(['--agent', 'claude'], {
+      stdin: JSON.stringify({ task: 't', protocol: 2 }),
+    });
+    expect(code).toBe(0);
+    const lines = ndjsonLines();
+    // 100 live event lines (cap), then the final envelope.
+    expect(lines).toHaveLength(101);
+    expect(lines.slice(0, -1).every((l) => 'event' in l)).toBe(true);
+    const envelope = lines[lines.length - 1]!;
+    const events = envelope.events as { name: string; summary: string; status: string }[];
+    expect(events).toHaveLength(101);
+    const note = events[events.length - 1]!;
+    expect(note.name).toBe('bridge');
+    expect(note.summary).toContain('50 more tool events omitted');
+  });
+
+  it('an unsupported protocol value exits 2', async () => {
+    const code = await bridgeExec(['--agent', 'claude'], {
+      stdin: JSON.stringify({ task: 't', protocol: 3 }),
+    });
+    expect(code).toBe(2);
+    expect(stderr.join('\n')).toContain('"protocol" must be 2');
+  });
+
+  it('legacy protocol (absent) stays raw text — old kernel compat', async () => {
+    process.env.PREVIOUSLY_BRIDGE_CLAUDE_CMD = fixtureCmd(fixtures.claude);
+
+    const code = await bridgeExec(['--agent', 'claude'], { stdin: payload('t') });
+    expect(code).toBe(0);
+    expect(stdout.join('\n')).toBe('fixture claude answer');
+    // No NDJSON envelope lines were written.
+    expect(writes.join('')).toBe('');
+  });
+
+  it('config agents tuning reaches the adapter argv', async () => {
+    process.env.PREVIOUSLY_BRIDGE_CLAUDE_CMD = fixtureCmd(fixtures.claude);
+    const argvOut = join(home, 'argv.json');
+    process.env.FIXTURE_ARGV_OUT = argvOut;
+    const paths = resolvePaths();
+    saveConfig(
+      { ...defaultConfig(paths), agents: { claude: { model: 'claude-opus-4-8', effort: 'medium' } } },
+      paths,
+    );
+
+    const code = await bridgeExec(['--agent', 'claude'], { stdin: payload('t') });
+    expect(code).toBe(0);
+    const argv = JSON.parse(readFileSync(argvOut, 'utf8')) as string[];
+    expect(argv.slice(-4)).toEqual(['--model', 'claude-opus-4-8', '--effort', 'medium']);
   });
 });

@@ -1,5 +1,5 @@
-import { buildPrompt, resolveCommandArgv, runNdjsonAdapter, textFromContent } from './runner.js';
-import { BridgeError, type BridgeAdapter, type BridgeTask, type DispatchOptions } from './types.js';
+import { buildPrompt, resolveCommandArgv, runNdjsonAdapter, summarizeToolInput, textFromContent } from './runner.js';
+import { BridgeError, type BridgeAdapter, type BridgeTask, type BridgeToolEvent, type DispatchOptions } from './types.js';
 
 /**
  * Claude Code adapter: `claude -p --output-format stream-json --verbose
@@ -63,6 +63,39 @@ export function extractClaudeResult(events: unknown[]): string {
   return lastAssistantText;
 }
 
+/**
+ * Stateful deriver (one per dispatch): claude stream-json → protocol-2 tool
+ * events. tool_use blocks in assistant messages start an event; tool_result
+ * blocks in user messages close it (is_error → error, else ok), matched to
+ * the call's name/summary via tool_use_id.
+ */
+export function createClaudeToolEventDeriver(): (event: unknown) => BridgeToolEvent[] {
+  const calls = new Map<string, { name: string; summary: string }>();
+  return (event) => {
+    if (!isRecord(event) || !isRecord(event.message)) return [];
+    const content = event.message.content;
+    if (!Array.isArray(content)) return [];
+    const out: BridgeToolEvent[] = [];
+    for (const block of content) {
+      if (!isRecord(block)) continue;
+      if (event.type === 'assistant' && block.type === 'tool_use' && typeof block.name === 'string') {
+        const summary = summarizeToolInput(block.name, block.input);
+        if (typeof block.id === 'string') calls.set(block.id, { name: block.name, summary });
+        out.push({ name: block.name, summary, status: 'start' });
+      }
+      if (event.type === 'user' && block.type === 'tool_result') {
+        const call = typeof block.tool_use_id === 'string' ? calls.get(block.tool_use_id) : undefined;
+        out.push({
+          name: call?.name ?? 'tool',
+          summary: call?.summary ?? '',
+          status: block.is_error === true ? 'error' : 'ok',
+        });
+      }
+    }
+    return out;
+  };
+}
+
 export const claudeAdapter: BridgeAdapter = {
   agent: 'claude',
   dispatch(task: BridgeTask, opts: DispatchOptions): Promise<string> {
@@ -70,10 +103,24 @@ export const claudeAdapter: BridgeAdapter = {
     const args = [...argv.slice(1), '-p', '--output-format', 'stream-json', '--verbose'];
     const maxTurns = resolveMaxTurns();
     if (maxTurns !== null) args.push('--max-turns', String(maxTurns));
+    if (opts.tuning?.model !== undefined) args.push('--model', opts.tuning.model);
+    if (opts.tuning?.effort !== undefined) args.push('--effort', opts.tuning.effort);
+    const derive = createClaudeToolEventDeriver();
     return runNdjsonAdapter(
       'claude',
       [argv[0] ?? 'claude', ...args],
-      { input: buildPrompt(task), timeoutMs: opts.timeoutMs, signal: opts.signal, cwd: opts.cwd },
+      {
+        input: buildPrompt(task),
+        timeoutMs: opts.timeoutMs,
+        signal: opts.signal,
+        cwd: opts.cwd,
+        onNdjsonEvent:
+          opts.onEvent === undefined
+            ? undefined
+            : (event) => {
+                for (const te of derive(event)) opts.onEvent!(te);
+              },
+      },
       extractClaudeResult,
     );
   },

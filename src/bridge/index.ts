@@ -33,5 +33,6 @@ export function dispatchBridgeTask(
 }
 
 export { BRIDGE_AGENTS, BridgeError } from './types.js';
-export type { BridgeAgent, BridgeTask, DispatchOptions } from './types.js';
+export type { AgentTuning, BridgeAgent, BridgeTask, BridgeToolEvent, DispatchOptions } from './types.js';
 export { checkCliPresence, resolveCommandArgv, resolveTimeoutMs } from './runner.js';
+export { createEventCollector, MAX_BRIDGE_EVENTS, MAX_BRIDGE_EVENT_BYTES } from './events.js';

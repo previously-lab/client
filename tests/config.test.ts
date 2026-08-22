@@ -79,6 +79,28 @@ describe('config', () => {
     expect(loadConfig(paths).brain).toEqual({ type: 'api-key', env: 'DEEPSEEK_API_KEY', model: 'deepseek-chat' });
   });
 
+  it('round-trips the agents tuning block (kimi carries no effort knob)', () => {
+    home = useTempHome();
+    const paths = resolvePaths();
+    const config = {
+      ...defaultConfig(paths),
+      agents: {
+        claude: { model: 'claude-opus-4-8', effort: 'high' as const },
+        codex: { model: 'gpt-5.3-codex', effort: 'low' as const },
+        kimi: { model: 'kimi-k2.5' },
+      },
+    };
+    saveConfig(config, paths);
+    expect(loadConfig(paths).agents).toEqual(config.agents);
+  });
+
+  it('old configs without agents load with it undefined', () => {
+    home = useTempHome();
+    const paths = resolvePaths();
+    writeFileSync(paths.configPath, JSON.stringify({ port: 3210, executionBackend: 'claude' }), 'utf8');
+    expect(loadConfig(paths).agents).toBeUndefined();
+  });
+
   it('old configs without brain/apiKeys load with both undefined', () => {
     home = useTempHome();
     const paths = resolvePaths();

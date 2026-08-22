@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { claudeAdapter, extractClaudeResult } from '../src/bridge/claude.js';
-import { codexAdapter, extractCodexResult } from '../src/bridge/codex.js';
-import { kimiAdapter, extractKimiResult } from '../src/bridge/kimi.js';
+import { claudeAdapter, createClaudeToolEventDeriver, extractClaudeResult } from '../src/bridge/claude.js';
+import { codexAdapter, deriveCodexToolEvents, extractCodexResult } from '../src/bridge/codex.js';
+import { createKimiToolEventDeriver, extractKimiResult, kimiAdapter } from '../src/bridge/kimi.js';
 import { checkCliPresence, resolveTimeoutMs, splitCommand } from '../src/bridge/runner.js';
 import { BridgeError } from '../src/bridge/types.js';
 import { cleanupTempHome, useTempHome } from './helpers.js';
@@ -87,6 +87,78 @@ describe('bridge adapters', () => {
     });
   });
 
+  describe('tool-event derivers (protocol 2)', () => {
+    it('claude: tool_use starts, tool_result closes with matched name and ok/error', () => {
+      const derive = createClaudeToolEventDeriver();
+      expect(
+        derive({
+          type: 'assistant',
+          message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls -la' } }] },
+        }),
+      ).toEqual([{ name: 'Bash', summary: 'ls -la', status: 'start' }]);
+      expect(
+        derive({
+          type: 'user',
+          message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false, content: 'ok' }] },
+        }),
+      ).toEqual([{ name: 'Bash', summary: 'ls -la', status: 'ok' }]);
+      expect(
+        derive({
+          type: 'user',
+          message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: true, content: 'boom' }] },
+        }),
+      ).toEqual([{ name: 'Bash', summary: 'ls -la', status: 'error' }]);
+      // Text blocks and unknown ids are not tool events.
+      expect(derive({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } })).toEqual([]);
+      expect(
+        derive({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'nope' }] } }),
+      ).toEqual([{ name: 'tool', summary: '', status: 'ok' }]);
+    });
+
+    it('codex: item.started/completed on tool item types; agent_message is speech', () => {
+      expect(
+        deriveCodexToolEvents({
+          type: 'item.started',
+          item: { type: 'command_execution', command: 'ls -la', status: 'in_progress' },
+        }),
+      ).toEqual([{ name: 'command_execution', summary: 'ls -la', status: 'start' }]);
+      expect(
+        deriveCodexToolEvents({
+          type: 'item.completed',
+          item: { type: 'command_execution', command: 'ls -la', status: 'completed' },
+        }),
+      ).toEqual([{ name: 'command_execution', summary: 'ls -la', status: 'ok' }]);
+      expect(
+        deriveCodexToolEvents({
+          type: 'item.completed',
+          item: { type: 'web_search', query: 'previously kernel', status: 'failed' },
+        }),
+      ).toEqual([{ name: 'web_search', summary: 'previously kernel', status: 'error' }]);
+      expect(
+        deriveCodexToolEvents({ type: 'item.completed', item: { type: 'agent_message', text: 'hi' } }),
+      ).toEqual([]);
+    });
+
+    it('kimi: tool_calls starts (arguments JSON parsed), role:tool closes ok', () => {
+      const derive = createKimiToolEventDeriver();
+      expect(
+        derive({
+          role: 'assistant',
+          tool_calls: [
+            { type: 'function', id: 'tool_1', function: { name: 'Read', arguments: '{"path":"package.json"}' } },
+          ],
+        }),
+      ).toEqual([{ name: 'Read', summary: 'package.json', status: 'start' }]);
+      // Kimi emits no error flag on tool results — honestly always ok.
+      expect(derive({ role: 'tool', tool_call_id: 'tool_1', content: '...' })).toEqual([
+        { name: 'Read', summary: 'package.json', status: 'ok' },
+      ]);
+      // Plain assistant speech and meta lines degrade to no events.
+      expect(derive({ role: 'assistant', content: 'answer' })).toEqual([]);
+      expect(derive({ role: 'meta', type: 'system.version' })).toEqual([]);
+    });
+  });
+
   describe('dispatch through fixture CLIs', () => {
     it('claude: pipes the assembled prompt on stdin and returns the result text', async () => {
       const stdinOut = join(home, 'stdin.txt');
@@ -145,6 +217,84 @@ describe('bridge adapters', () => {
       expect(argv[0]).toBe('exec');
       expect(argv[1]).toBe('--json');
       expect(argv[2]).toBe('codex task');
+    });
+
+    it('claude: tuning appends --model and --effort', async () => {
+      const argvOut = join(home, 'argv.json');
+      process.env.PREVIOUSLY_BRIDGE_CLAUDE_CMD = fixtureCmd(fixtures.claude);
+      process.env.FIXTURE_ARGV_OUT = argvOut;
+
+      await claudeAdapter.dispatch(
+        { task: 't' },
+        { timeoutMs: 10_000, tuning: { model: 'claude-opus-4-8', effort: 'high' } },
+      );
+      const argv = JSON.parse(readFileSync(argvOut, 'utf8')) as string[];
+      expect(argv.slice(-4)).toEqual(['--model', 'claude-opus-4-8', '--effort', 'high']);
+    });
+
+    it('codex: tuning appends -m and -c model_reasoning_effort before the prompt', async () => {
+      const argvOut = join(home, 'argv.json');
+      process.env.PREVIOUSLY_BRIDGE_CODEX_CMD = fixtureCmd(fixtures.codex);
+      process.env.FIXTURE_ARGV_OUT = argvOut;
+
+      await codexAdapter.dispatch(
+        { task: 'codex task' },
+        { timeoutMs: 10_000, tuning: { model: 'gpt-5.3-codex', effort: 'low' } },
+      );
+      const argv = JSON.parse(readFileSync(argvOut, 'utf8')) as string[];
+      expect(argv).toEqual(['exec', '--json', '-m', 'gpt-5.3-codex', '-c', 'model_reasoning_effort=low', 'codex task']);
+    });
+
+    it('kimi: tuning appends -m only (kimi has no effort knob)', async () => {
+      const argvOut = join(home, 'argv.json');
+      process.env.PREVIOUSLY_BRIDGE_KIMI_CMD = fixtureCmd(fixtures.kimi);
+      process.env.FIXTURE_ARGV_OUT = argvOut;
+
+      await kimiAdapter.dispatch({ task: 'kimi task' }, { timeoutMs: 10_000, tuning: { model: 'kimi-k2.5' } });
+      const argv = JSON.parse(readFileSync(argvOut, 'utf8')) as string[];
+      expect(argv.slice(-2)).toEqual(['-m', 'kimi-k2.5']);
+    });
+
+    it('claude: onEvent streams derived tool events live during dispatch', async () => {
+      process.env.PREVIOUSLY_BRIDGE_CLAUDE_CMD = fixtureCmd(fixtures.claude);
+      const events: { name: string; summary: string; status: string }[] = [];
+      let eventsDoneBeforeResult = false;
+
+      const text = await claudeAdapter.dispatch(
+        { task: 't' },
+        { timeoutMs: 10_000, onEvent: (e) => events.push(e) },
+      );
+      eventsDoneBeforeResult = events.length > 0;
+      expect(text).toBe('fixture claude answer');
+      expect(eventsDoneBeforeResult).toBe(true);
+      expect(events).toEqual([
+        { name: 'Bash', summary: 'ls -la', status: 'start' },
+        { name: 'Bash', summary: 'ls -la', status: 'ok' },
+      ]);
+    });
+
+    it('codex: onEvent derives start/ok for command_execution, never agent_message', async () => {
+      process.env.PREVIOUSLY_BRIDGE_CODEX_CMD = fixtureCmd(fixtures.codex);
+      const events: { name: string; status: string }[] = [];
+
+      const text = await codexAdapter.dispatch({ task: 't' }, { timeoutMs: 10_000, onEvent: (e) => events.push(e) });
+      expect(text).toBe('fixture codex answer');
+      expect(events).toEqual([
+        { name: 'command_execution', summary: 'ls -la', status: 'start' },
+        { name: 'command_execution', summary: 'ls -la', status: 'ok' },
+      ]);
+    });
+
+    it('kimi: onEvent derives events from the verified tool_calls/tool shape', async () => {
+      process.env.PREVIOUSLY_BRIDGE_KIMI_CMD = fixtureCmd(fixtures.kimi);
+      const events: { name: string; status: string }[] = [];
+
+      const text = await kimiAdapter.dispatch({ task: 't' }, { timeoutMs: 10_000, onEvent: (e) => events.push(e) });
+      expect(text).toBe('fixture kimi answer');
+      expect(events).toEqual([
+        { name: 'Read', summary: 'package.json', status: 'start' },
+        { name: 'Read', summary: 'package.json', status: 'ok' },
+      ]);
     });
 
     it('missing CLI fails honestly with cli-not-found', async () => {

@@ -13,6 +13,21 @@ export const BRIDGE_AGENTS: BridgeAgent[] = ['claude', 'codex', 'kimi'];
 export interface BridgeTask {
   task: string;
   context?: string | null;
+  /**
+   * Wire protocol version. Absent: raw result text on stdout (v1). 2: NDJSON
+   * envelope — live `{"event":...}` tool-event lines followed by a final
+   * `{"protocol":2,"result":...,"events":[...]}` line.
+   */
+  protocol?: 2;
+}
+
+/** One tool invocation as surfaced on the protocol-2 event stream. */
+export interface BridgeToolEvent {
+  /** Tool name (e.g. "Bash", "Read"); codex reports its item type. */
+  name: string;
+  /** Truncated single-line summary of the call input. */
+  summary: string;
+  status: 'start' | 'ok' | 'error';
 }
 
 export type BridgeFailureReason =
@@ -47,6 +62,20 @@ export interface DispatchOptions {
    * temp workspace carrying the memory skill file (CLAUDE.md / AGENTS.md).
    */
   cwd?: string;
+  /**
+   * Live tool-event sink (protocol 2): called with each derived tool event as
+   * the CLI's NDJSON stream arrives. Absent sink = events are not derived.
+   */
+  onEvent?: (event: BridgeToolEvent) => void;
+  /** Per-agent tuning from config.agents (model / effort flags). */
+  tuning?: AgentTuning;
+}
+
+/** Per-agent flag tuning handed to an adapter (config.agents[agent]). */
+export interface AgentTuning {
+  model?: string;
+  /** Reasoning effort; only adapters whose CLI supports it honor this. */
+  effort?: 'low' | 'medium' | 'high';
 }
 
 /** One adapter per subscription CLI: task in → final result text out. */

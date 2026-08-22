@@ -7,7 +7,9 @@ import {
   resolveTimeoutMs,
   type BridgeAgent,
   type BridgeTask,
+  type DispatchOptions,
 } from '../bridge/index.js';
+import { createEventCollector } from '../bridge/events.js';
 import { loadConfig } from '../lib/config.js';
 import { resolvePaths } from '../lib/paths.js';
 import { materializeBridgeWorkspace } from '../lib/skills.js';
@@ -16,8 +18,11 @@ import { materializeBridgeWorkspace } from '../lib/skills.js';
  * `previously bridge-exec` — the kernel-side half of the subscription bridge
  * contract (agent repo delegateTask executor, design §7):
  *
- *   stdin:  {"task": string, "context": string | null}   (JSON)
- *   stdout: the adapter's final result text (raw, no framing)
+ *   stdin:  {"task": string, "context": string | null, "protocol"?: 2}  (JSON)
+ *   stdout: protocol absent — the adapter's final result text (raw, no framing)
+ *           protocol 2      — NDJSON: one {"event":{name,summary,status}} line
+ *           per tool event as it arrives, then a final
+ *           {"protocol":2,"result":<text>,"events":[...]} line.
  *   exit:   0 on success; 1 on adapter failure; 2 on usage errors
  *           (bad flags, malformed stdin payload, no agent configured).
  *           Diagnostics always go to stderr — stdout stays a clean result.
@@ -27,7 +32,8 @@ import { materializeBridgeWorkspace } from '../lib/skills.js';
  *
  * Agent selection: --agent claude|codex|kimi, else the per-spawn
  * PREVIOUSLY_BRAIN_AGENT env override (the kernel sets it per chat call),
- * else config executionBackend.
+ * else config executionBackend. Model/effort tuning comes from the
+ * config.agents[agent] block (absent = CLI defaults).
  *
  * Before spawning, the selected CLI gets a per-call temp workspace (cwd)
  * carrying the "Previously memory" skill document as its cwd-convention
@@ -71,7 +77,14 @@ function parsePayload(raw: string): BridgeTask {
   if (rec.context !== undefined && rec.context !== null && typeof rec.context !== 'string') {
     throw new Error('stdin payload "context" must be a string or null');
   }
-  return { task: rec.task, context: (rec.context as string | null | undefined) ?? null };
+  if (rec.protocol !== undefined && rec.protocol !== 2) {
+    throw new Error('stdin payload "protocol" must be 2 when present (absent = legacy plain-text protocol)');
+  }
+  return {
+    task: rec.task,
+    context: (rec.context as string | null | undefined) ?? null,
+    ...(rec.protocol === 2 ? { protocol: 2 as const } : {}),
+  };
 }
 
 function resolveAgent(flag: string | undefined, configured: string | null): BridgeAgent {
@@ -114,11 +127,13 @@ export async function run(args: string[], opts: BridgeExecOptions = {}): Promise
   let task: BridgeTask;
   let agent: BridgeAgent;
   let memoryRoot: string;
+  let tuning: DispatchOptions['tuning'];
   try {
     task = parsePayload(raw);
     const config = loadConfig(resolvePaths());
     agent = resolveAgent(values.agent, config.executionBackend);
     memoryRoot = config.memoryRoot;
+    tuning = config.agents?.[agent];
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     return 2;
@@ -135,12 +150,26 @@ export async function run(args: string[], opts: BridgeExecOptions = {}): Promise
   process.on('SIGINT', onSignal);
   process.on('SIGTERM', onSignal);
   try {
+    // Protocol 2: stream each tool event live as an NDJSON {"event":...}
+    // line, then close with the final {"protocol":2,...} envelope. Legacy
+    // protocol (absent) keeps stdout a raw result for old kernels.
+    const collector =
+      task.protocol === 2
+        ? createEventCollector((event) => process.stdout.write(JSON.stringify({ event }) + '\n'))
+        : null;
     const text = await dispatchBridgeTask(agent, task, {
       timeoutMs: resolveTimeoutMs(agent),
       signal: controller.signal,
       cwd: workspace.dir,
+      tuning,
+      onEvent: collector === null ? undefined : (event) => collector.record(event),
     });
-    console.log(text);
+    if (collector !== null) {
+      const envelope = { protocol: 2 as const, result: text, events: collector.finalize() };
+      process.stdout.write(JSON.stringify(envelope) + '\n');
+    } else {
+      console.log(text);
+    }
     return 0;
   } catch (err) {
     if (err instanceof BridgeError) {

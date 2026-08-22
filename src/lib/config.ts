@@ -15,6 +15,20 @@ export type BrainConfig =
   | { type: 'api-key'; env: string; model?: string }
   | { type: 'bridge'; agent: 'claude' | 'codex' | 'kimi' };
 
+/** Reasoning-effort knob shared by the claude and codex CLIs. */
+export type AgentEffort = 'low' | 'medium' | 'high';
+
+/**
+ * Per-agent tuning for the subscription bridge CLIs (design §7). Absent
+ * fields mean "CLI default". Kimi Code exposes no effort knob — its entry
+ * honestly carries model only.
+ */
+export interface AgentsConfig {
+  claude?: { model?: string; effort?: AgentEffort };
+  codex?: { model?: string; effort?: AgentEffort };
+  kimi?: { model?: string };
+}
+
 export interface PreviouslyConfig {
   storage: 'local';
   memoryRoot: string;
@@ -41,6 +55,8 @@ export interface PreviouslyConfig {
    * kernel's environment.
    */
   apiKeys?: Record<string, string>;
+  /** Per-agent model/effort tuning for bridge-exec dispatches (§7). */
+  agents?: AgentsConfig;
 }
 
 export const DEFAULT_PORT = 3210;

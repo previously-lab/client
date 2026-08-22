@@ -74,11 +74,20 @@ const KILL_GRACE_MS = 3_000;
 export function runProcess(
   command: string,
   args: string[],
-  opts: { input?: string; timeoutMs: number; signal?: AbortSignal; cwd?: string },
+  opts: {
+    input?: string;
+    timeoutMs: number;
+    signal?: AbortSignal;
+    cwd?: string;
+    /** Line-buffered stdout sink: called with each complete line as it
+     *  arrives (final unterminated line flushed on close). */
+    onStdoutLine?: (line: string) => void;
+  },
 ): Promise<ProcessOutcome> {
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
+    let lineBuf = '';
     let timedOut = false;
     let aborted = false;
     let spawnError: NodeJS.ErrnoException | null = null;
@@ -92,6 +101,7 @@ export function runProcess(
       if (timer !== undefined) clearTimeout(timer);
       if (killer !== undefined) clearTimeout(killer);
       opts.signal?.removeEventListener('abort', onAbort);
+      if (lineBuf.trim().length > 0) opts.onStdoutLine?.(lineBuf);
       resolve({ code, stdout, stderr, timedOut, aborted, spawnError });
     };
 
@@ -102,7 +112,17 @@ export function runProcess(
     });
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (d: string) => (stdout += d));
+    child.stdout.on('data', (d: string) => {
+      stdout += d;
+      if (opts.onStdoutLine !== undefined) {
+        lineBuf += d;
+        let idx: number;
+        while ((idx = lineBuf.indexOf('\n')) >= 0) {
+          opts.onStdoutLine(lineBuf.slice(0, idx));
+          lineBuf = lineBuf.slice(idx + 1);
+        }
+      }
+    });
     child.stderr.on('data', (d: string) => (stderr += d));
 
     const kill = (): void => {
@@ -172,6 +192,31 @@ export function parseNdjson(stdout: string): NdjsonStream {
   return { events, badLines };
 }
 
+function truncateSummary(text: string, max = 200): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+/**
+ * Truncated, single-line summary of a tool call's input/args (protocol-2
+ * event envelopes). Same preference order as the scribe parsers
+ * (command ?? file_path ?? pattern ?? prompt ?? query ?? url), plus `path`
+ * (kimi's Read-style args); falls back to compact JSON.
+ */
+export function summarizeToolInput(name: string, input: unknown): string {
+  if (typeof input === 'object' && input !== null) {
+    const rec = input as Record<string, unknown>;
+    const preferred =
+      rec.command ?? rec.file_path ?? rec.path ?? rec.pattern ?? rec.prompt ?? rec.query ?? rec.url;
+    if (typeof preferred === 'string') return truncateSummary(preferred);
+  }
+  try {
+    return truncateSummary(JSON.stringify(input) ?? '');
+  } catch {
+    return `(${name} input not serializable)`;
+  }
+}
+
 /** Extract display text from a message `content` that may be a plain string
  *  or an array of content blocks with `text` fields. */
 export function textFromContent(content: unknown): string {
@@ -193,19 +238,41 @@ export function textFromContent(content: unknown): string {
 /**
  * Shared spawn-and-extract pipeline for NDJSON stream adapters. Every
  * failure mode becomes an honest BridgeError (design §9); the extract
- * callback is adapter-specific and pure.
+ * callback is adapter-specific and pure. When `onNdjsonEvent` is given, each
+ * parsed stream event is handed to it live (line-buffered, as it arrives).
  */
 export async function runNdjsonAdapter(
   agent: BridgeAgent,
   argv: string[],
-  opts: { input: string; timeoutMs: number; signal?: AbortSignal; cwd?: string },
+  opts: {
+    input: string;
+    timeoutMs: number;
+    signal?: AbortSignal;
+    cwd?: string;
+    onNdjsonEvent?: (event: unknown) => void;
+  },
   extract: (events: unknown[]) => string,
 ): Promise<string> {
   const command = argv[0];
   if (command === undefined) {
     throw new BridgeError('cli-not-found', `No command configured for the ${agent} adapter.`);
   }
-  const outcome = await runProcess(command, argv.slice(1), opts);
+  const { onNdjsonEvent, ...procOpts } = opts;
+  const outcome = await runProcess(command, argv.slice(1), {
+    ...procOpts,
+    onStdoutLine:
+      onNdjsonEvent === undefined
+        ? undefined
+        : (line) => {
+            const trimmed = line.trim();
+            if (trimmed.length === 0) return;
+            try {
+              onNdjsonEvent(JSON.parse(trimmed));
+            } catch {
+              // Non-JSON lines are still reported via badLines at the end.
+            }
+          },
+  });
 
   if (outcome.spawnError !== null) {
     if (outcome.spawnError.code === 'ENOENT') {

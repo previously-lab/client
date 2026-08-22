@@ -1,5 +1,5 @@
-import { buildPrompt, resolveCommandArgv, runNdjsonAdapter } from './runner.js';
-import { BridgeError, type BridgeAdapter, type BridgeTask, type DispatchOptions } from './types.js';
+import { buildPrompt, resolveCommandArgv, runNdjsonAdapter, summarizeToolInput } from './runner.js';
+import { BridgeError, type BridgeAdapter, type BridgeTask, type BridgeToolEvent, type DispatchOptions } from './types.js';
 
 /**
  * Codex adapter: `codex exec --json "<prompt>"`, result text from the NDJSON
@@ -48,15 +48,47 @@ export function extractCodexResult(events: unknown[]): string {
   return lastText;
 }
 
+const TOOL_ITEM_TYPES = new Set(['command_execution', 'file_change', 'mcp_tool_call', 'web_search']);
+
+/**
+ * Pure deriver: codex item events → protocol-2 tool events. item.started
+ * starts an event, item.completed closes it (item.status "failed" → error).
+ * agent_message items are speech, not tool calls — never derived.
+ */
+export function deriveCodexToolEvents(event: unknown): BridgeToolEvent[] {
+  if (!isRecord(event)) return [];
+  if (event.type !== 'item.started' && event.type !== 'item.completed') return [];
+  if (!isRecord(event.item)) return [];
+  const itemType = event.item.type ?? event.item.item_type;
+  if (typeof itemType !== 'string' || !TOOL_ITEM_TYPES.has(itemType)) return [];
+  const status =
+    event.type === 'item.started' ? 'start' : event.item.status === 'failed' ? 'error' : 'ok';
+  return [{ name: itemType, summary: summarizeToolInput(itemType, event.item), status }];
+}
+
 export const codexAdapter: BridgeAdapter = {
   agent: 'codex',
   dispatch(task: BridgeTask, opts: DispatchOptions): Promise<string> {
     const argv = resolveCommandArgv('codex');
-    const args = [...argv.slice(1), 'exec', '--json', buildPrompt(task)];
+    const args = [...argv.slice(1), 'exec', '--json'];
+    if (opts.tuning?.model !== undefined) args.push('-m', opts.tuning.model);
+    if (opts.tuning?.effort !== undefined) args.push('-c', `model_reasoning_effort=${opts.tuning.effort}`);
+    args.push(buildPrompt(task));
     return runNdjsonAdapter(
       'codex',
       [argv[0] ?? 'codex', ...args],
-      { input: '', timeoutMs: opts.timeoutMs, signal: opts.signal, cwd: opts.cwd },
+      {
+        input: '',
+        timeoutMs: opts.timeoutMs,
+        signal: opts.signal,
+        cwd: opts.cwd,
+        onNdjsonEvent:
+          opts.onEvent === undefined
+            ? undefined
+            : (event) => {
+                for (const te of deriveCodexToolEvents(event)) opts.onEvent!(te);
+              },
+      },
       extractCodexResult,
     );
   },

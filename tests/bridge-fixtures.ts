@@ -7,10 +7,12 @@ import { join } from 'node:path';
  * quota (design §9 — we never claim "tested against the real CLI" for these).
  *
  * Shapes mirror the real outputs captured on 2026-08:
- * - claude 2.1.204: system init → assistant message → result event (verified)
- * - kimi 0.34.0: meta version → assistant content → meta resume hint (verified)
- * - codex: item.completed agent_message events (ASSUMED — no binary on the
- *   build machine; see src/bridge/codex.ts)
+ * - claude 2.1.204: system init → assistant tool_use → user tool_result →
+ *   assistant text → result event (verified)
+ * - kimi 0.34.0: meta version → assistant tool_calls → role:"tool" result →
+ *   assistant content → meta resume hint (verified)
+ * - codex: item.started/item.completed command_execution + agent_message
+ *   events (ASSUMED — no binary on the build machine; see src/bridge/codex.ts)
  *
  * Every fixture records how it was invoked: stdin goes to FIXTURE_STDIN_OUT
  * and argv to FIXTURE_ARGV_OUT when those env vars are set, so tests can
@@ -36,6 +38,8 @@ process.stdin.on('end', () => {
 export const FIXTURE_CLAUDE = RECORDING_PREAMBLE + `function main() {
   const lines = [
     JSON.stringify({ type: 'system', subtype: 'init', session_id: 'fixture-session', tools: [] }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls -la' } }] } }),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false, content: 'ok' }] } }),
     JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'fixture claude answer' }] } }),
     JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'fixture claude answer', num_turns: 1 }),
   ];
@@ -53,9 +57,22 @@ export const FIXTURE_CLAUDE_ERROR = RECORDING_PREAMBLE + `function main() {
 }
 `;
 
+/** Emits 150 tool_use events (over the 100-event bridge cap) then a result. */
+export const FIXTURE_CLAUDE_MANY_EVENTS = RECORDING_PREAMBLE + `function main() {
+  const lines = [];
+  for (let i = 0; i < 150; i++) {
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_' + i, name: 'Bash', input: { command: 'cmd ' + i } }] } }));
+  }
+  lines.push(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'fixture many-events answer', num_turns: 150 }));
+  process.stdout.write(lines.join('\\n') + '\\n');
+}
+`;
+
 export const FIXTURE_KIMI = RECORDING_PREAMBLE + `function main() {
   const lines = [
     JSON.stringify({ role: 'meta', type: 'system.version', version: '0.0.0-fixture' }),
+    JSON.stringify({ role: 'assistant', tool_calls: [{ type: 'function', id: 'tool_1', function: { name: 'Read', arguments: JSON.stringify({ path: 'package.json' }) } }] }),
+    JSON.stringify({ role: 'tool', tool_call_id: 'tool_1', content: '{ "name": "fixture" }' }),
     JSON.stringify({ role: 'assistant', content: 'fixture kimi answer' }),
     JSON.stringify({ role: 'meta', type: 'session.resume_hint', session_id: 'fixture' }),
   ];
@@ -67,7 +84,9 @@ export const FIXTURE_CODEX = RECORDING_PREAMBLE + `function main() {
   const lines = [
     JSON.stringify({ type: 'thread.started', thread_id: 'fixture' }),
     JSON.stringify({ type: 'turn.started' }),
-    JSON.stringify({ type: 'item.completed', item: { id: 'item_0', type: 'agent_message', text: 'fixture codex answer' } }),
+    JSON.stringify({ type: 'item.started', item: { id: 'item_0', type: 'command_execution', command: 'ls -la', status: 'in_progress' } }),
+    JSON.stringify({ type: 'item.completed', item: { id: 'item_0', type: 'command_execution', command: 'ls -la', status: 'completed' } }),
+    JSON.stringify({ type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: 'fixture codex answer' } }),
     JSON.stringify({ type: 'turn.completed', usage: {} }),
   ];
   process.stdout.write(lines.join('\\n') + '\\n');
@@ -104,6 +123,7 @@ export const FIXTURE_HANG = RECORDING_PREAMBLE + `function main() {
 export interface FixtureClis {
   claude: string;
   claudeError: string;
+  claudeManyEvents: string;
   kimi: string;
   codex: string;
   codexError: string;
@@ -119,6 +139,7 @@ export function writeFixtureClis(dir: string): FixtureClis {
   const files: Record<keyof FixtureClis, string> = {
     claude: FIXTURE_CLAUDE,
     claudeError: FIXTURE_CLAUDE_ERROR,
+    claudeManyEvents: FIXTURE_CLAUDE_MANY_EVENTS,
     kimi: FIXTURE_KIMI,
     codex: FIXTURE_CODEX,
     codexError: FIXTURE_CODEX_ERROR,
