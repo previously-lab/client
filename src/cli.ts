@@ -1,16 +1,23 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
+import * as agentlog from './commands/agentlog.js';
 import * as bridgeExec from './commands/bridge-exec.js';
+import * as card from './commands/card.js';
 import * as init from './commands/init.js';
 import * as install from './commands/install.js';
 import * as kernel from './commands/kernel.js';
 import * as launch from './commands/launch.js';
 import * as logs from './commands/logs.js';
 import * as open from './commands/open.js';
+import * as readslice from './commands/readslice.js';
+import * as recall from './commands/recall.js';
 import * as scribe from './commands/scribe.js';
+import * as slicesummary from './commands/slicesummary.js';
 import * as start from './commands/start.js';
 import * as status from './commands/status.js';
 import * as stop from './commands/stop.js';
+import * as strands from './commands/strands.js';
+import * as timeline from './commands/timeline.js';
 import * as upgrade from './commands/upgrade.js';
 
 type CommandHandler = (args: string[]) => Promise<number>;
@@ -29,6 +36,13 @@ const commands: Record<string, CommandHandler> = {
   install: install.run,
   uninstall: install.runUninstall,
   'bridge-exec': bridgeExec.run,
+  recall: recall.run,
+  readslice: readslice.run,
+  timeline: timeline.run,
+  strands: strands.run,
+  card: card.run,
+  slicesummary: slicesummary.run,
+  agentlog: agentlog.run,
 };
 
 function usage(): void {
@@ -54,6 +68,13 @@ Advanced:
   watch       Run the scribe in the foreground (fs watch → time slices; start includes it)
   scribe      Scribe one-shot scan: scribe once [--source claude-code|codex|kimi-code|gemini]
   bridge-exec Subscription bridge entry for the kernel delegateTask tool (JSON on stdin, result on stdout)
+  recall      Constrained memory search for bridged agents: recall "<query>" (pointers only)
+  readslice   Constrained slice reader for bridged agents: readslice <sliceId> [--start N --end N]
+  timeline    Constrained timeline reader for bridged agents: timeline [--month YYYY-MM] [--day MM-DD]
+  strands     Constrained strand reader for bridged agents: strands [name]
+  card        Constrained card reader for bridged agents: card [--slice <sliceId>]
+  slicesummary Constrained slice-summary reader for bridged agents: slicesummary <sliceId>
+  agentlog    Constrained cognition-record reader for bridged agents: agentlog <sliceId> [--start N --end N]
 
 Environment:
   PREVIOUSLY_HOME     Root for all state (default: ~/.previously)

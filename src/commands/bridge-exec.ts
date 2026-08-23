@@ -1,9 +1,11 @@
 import { parseArgs } from 'node:util';
 import { rmSync } from 'node:fs';
 import {
+  BRIDGE_PHASES,
   BridgeError,
   dispatchBridgeTask,
   isBridgeAgent,
+  isBridgePhase,
   resolveTimeoutMs,
   type BridgeAgent,
   type BridgeTask,
@@ -12,17 +14,21 @@ import {
 import { createEventCollector } from '../bridge/events.js';
 import { loadConfig } from '../lib/config.js';
 import { resolvePaths } from '../lib/paths.js';
+import { renderPhaseSkillDoc } from '../lib/phase-skills.js';
 import { materializeBridgeWorkspace } from '../lib/skills.js';
 
 /**
  * `previously bridge-exec` — the kernel-side half of the subscription bridge
  * contract (agent repo delegateTask executor, design §7):
  *
- *   stdin:  {"task": string, "context": string | null, "protocol"?: 2}  (JSON)
+ *   stdin:  {"task": string, "context": string | null, "protocol"?: 2,
+ *            "phase"?: "chat" | "housekeeping"}                          (JSON)
  *   stdout: protocol absent — the adapter's final result text (raw, no framing)
  *           protocol 2      — NDJSON: one {"event":{name,summary,status}} line
- *           per tool event as it arrives, then a final
- *           {"protocol":2,"result":<text>,"events":[...]} line.
+ *           per tool event and (claude only) advisory {"delta":<text chunk>}
+ *           lines as the answer streams, then a final
+ *           {"protocol":2,"result":<text>,"events":[...]} line. The envelope
+ *           stays the source of truth; deltas may be discarded by consumers.
  *   exit:   0 on success; 1 on adapter failure; 2 on usage errors
  *           (bad flags, malformed stdin payload, no agent configured).
  *           Diagnostics always go to stderr — stdout stays a clean result.
@@ -36,10 +42,13 @@ import { materializeBridgeWorkspace } from '../lib/skills.js';
  * config.agents[agent] block (absent = CLI defaults).
  *
  * Before spawning, the selected CLI gets a per-call temp workspace (cwd)
- * carrying the "Previously memory" skill document as its cwd-convention
- * instruction file (CLAUDE.md for claude, AGENTS.md for codex/kimi), with
- * MEMORY_ROOT filled from config. The workspace is removed in a finally
- * block after the call.
+ * carrying its cwd-convention instruction file (CLAUDE.md for claude,
+ * AGENTS.md for codex/kimi), with MEMORY_ROOT filled from config. The
+ * document is the generic "Previously memory" skill — or, when the payload
+ * carries `phase` (experimental phase outsourcing), the phase-specific doc:
+ * 'chat' (constrained recall/readslice tool contract) or 'housekeeping'
+ * (analysis + evolution JSON report contract). The workspace is removed in
+ * a finally block after the call.
  */
 
 export interface BridgeExecOptions {
@@ -80,10 +89,14 @@ function parsePayload(raw: string): BridgeTask {
   if (rec.protocol !== undefined && rec.protocol !== 2) {
     throw new Error('stdin payload "protocol" must be 2 when present (absent = legacy plain-text protocol)');
   }
+  if (rec.phase !== undefined && !isBridgePhase(rec.phase)) {
+    throw new Error(`stdin payload "phase" must be one of ${BRIDGE_PHASES.join('|')} when present`);
+  }
   return {
     task: rec.task,
     context: (rec.context as string | null | undefined) ?? null,
     ...(rec.protocol === 2 ? { protocol: 2 as const } : {}),
+    ...(rec.phase !== undefined ? { phase: rec.phase } : {}),
   };
 }
 
@@ -108,6 +121,18 @@ function resolveAgent(flag: string | undefined, configured: string | null): Brid
     'No bridge agent selected. Pass --agent claude|codex|kimi, or set a default with ' +
       '`previously init --backend claude|codex|kimi`.',
   );
+}
+
+/**
+ * The absolute self-invocation prefix injected into phase skill docs as
+ * `{{PREVIOUSLY_CMD}}`: the spawned agent CLI must be able to run the memory
+ * commands even when no `previously` shim is on ITS PATH (dev checkouts,
+ * non-global installs). Falls back to the bare name when argv[1] is unknown.
+ */
+function previouslyCommandPrefix(): string {
+  const entry = process.argv[1];
+  if (!entry) return 'previously';
+  return `"${process.execPath}" "${entry}"`;
 }
 
 export async function run(args: string[], opts: BridgeExecOptions = {}): Promise<number> {
@@ -141,8 +166,16 @@ export async function run(args: string[], opts: BridgeExecOptions = {}): Promise
 
   // Per-call workspace: the agent CLI runs with cwd = a temp dir carrying
   // its cwd-convention instruction file (CLAUDE.md / AGENTS.md) filled with
-  // the memory skill document — zero user config needed on the agent side.
-  const workspace = materializeBridgeWorkspace(agent, memoryRoot);
+  // the skill document — the phase-specific doc when the payload delegates a
+  // whole workflow phase, else the generic memory doc (legacy delegateTask
+  // path, byte-compatible).
+  const workspace = materializeBridgeWorkspace(
+    agent,
+    memoryRoot,
+    task.phase !== undefined
+      ? renderPhaseSkillDoc(task.phase, memoryRoot, previouslyCommandPrefix())
+      : undefined,
+  );
 
   // Forward termination to the CLI child: kill-on-SIGTERM, no orphans.
   const controller = new AbortController();
@@ -151,8 +184,10 @@ export async function run(args: string[], opts: BridgeExecOptions = {}): Promise
   process.on('SIGTERM', onSignal);
   try {
     // Protocol 2: stream each tool event live as an NDJSON {"event":...}
-    // line, then close with the final {"protocol":2,...} envelope. Legacy
-    // protocol (absent) keeps stdout a raw result for old kernels.
+    // line and each answer-text chunk as a {"delta":...} line, then close
+    // with the final {"protocol":2,...} envelope. Legacy protocol (absent)
+    // keeps stdout a raw result for old kernels — deltas are swallowed
+    // (no sink is passed, so the adapter never derives them).
     const collector =
       task.protocol === 2
         ? createEventCollector((event) => process.stdout.write(JSON.stringify({ event }) + '\n'))
@@ -163,6 +198,10 @@ export async function run(args: string[], opts: BridgeExecOptions = {}): Promise
       cwd: workspace.dir,
       tuning,
       onEvent: collector === null ? undefined : (event) => collector.record(event),
+      onDelta:
+        task.protocol === 2
+          ? (delta) => process.stdout.write(JSON.stringify({ delta }) + '\n')
+          : undefined,
     });
     if (collector !== null) {
       const envelope = { protocol: 2 as const, result: text, events: collector.finalize() };

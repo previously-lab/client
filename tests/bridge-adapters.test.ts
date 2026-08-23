@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { claudeAdapter, createClaudeToolEventDeriver, extractClaudeResult } from '../src/bridge/claude.js';
+import { claudeAdapter, createClaudeDeltaDeriver, createClaudeToolEventDeriver, deltaFromClaudeEvent, extractClaudeResult } from '../src/bridge/claude.js';
 import { codexAdapter, deriveCodexToolEvents, extractCodexResult } from '../src/bridge/codex.js';
 import { createKimiToolEventDeriver, extractKimiResult, kimiAdapter } from '../src/bridge/kimi.js';
 import { checkCliPresence, resolveTimeoutMs, splitCommand } from '../src/bridge/runner.js';
@@ -56,6 +56,126 @@ describe('bridge adapters', () => {
     it('claude: error result event raises cli-error with the detail', () => {
       const events = [{ type: 'result', subtype: 'error_max_turns', is_error: true, result: 'Reached max turns (2)' }];
       expect(() => extractClaudeResult(events)).toThrowError(/error_max_turns: Reached max turns/);
+    });
+
+    it('claude: deltaFromClaudeEvent extracts text_delta partials, ignores the rest', () => {
+      const partial = (text: string): unknown => ({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
+      });
+      expect(deltaFromClaudeEvent(partial('hello'))).toBe('hello');
+      expect(deltaFromClaudeEvent(partial(' '))).toBe(' ');
+      // Other delta kinds, other event types, and malformed shapes: ignored.
+      expect(
+        deltaFromClaudeEvent({
+          type: 'stream_event',
+          event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{}' } },
+        }),
+      ).toBeNull();
+      expect(deltaFromClaudeEvent({ type: 'stream_event', event: { type: 'message_start' } })).toBeNull();
+      expect(deltaFromClaudeEvent({ type: 'assistant', message: { content: [{ type: 'text', text: 'x' }] } })).toBeNull();
+      expect(deltaFromClaudeEvent(partial(''))).toBeNull();
+      expect(deltaFromClaudeEvent({ type: 'stream_event' })).toBeNull();
+      expect(deltaFromClaudeEvent('not an object')).toBeNull();
+    });
+
+    it('claude: housekeeping deriver streams narration + thinking, suppresses JSON-report blocks', () => {
+      const start = (index: number): unknown => ({ type: 'stream_event', event: { type: 'content_block_start', index } });
+      const stop = (index: number): unknown => ({ type: 'stream_event', event: { type: 'content_block_stop', index } });
+      const text = (index: number, t: string): unknown => ({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index, delta: { type: 'text_delta', text: t } },
+      });
+      const think = (index: number, t: string): unknown => ({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index, delta: { type: 'thinking_delta', thinking: t } },
+      });
+
+      const derive = createClaudeDeltaDeriver('housekeeping');
+      const out: string[] = [];
+      const feed = (e: unknown): void => {
+        const d = derive(e);
+        if (d !== null) out.push(d);
+      };
+
+      // Block 0: narration after leading whitespace (buffered prefix flushes).
+      feed(start(0));
+      feed(text(0, '\n  '));
+      feed(text(0, 'Let me check'));
+      feed(text(0, ' the timeline.'));
+      feed(stop(0));
+      // Block 1: thinking always narrates.
+      feed(start(1));
+      feed(think(1, 'tags look like work…'));
+      feed(stop(1));
+      // Block 2: the JSON report — fully suppressed.
+      feed(start(2));
+      feed(text(2, '{'));
+      feed(text(2, '"analysis":{}'));
+      feed(stop(2));
+      // Block 3: fenced report variant — also suppressed.
+      feed(start(3));
+      feed(text(3, '```json\n{}'));
+      feed(stop(3));
+      // Unknown block index and non-delta events: silent.
+      feed(text(9, 'orphan'));
+      feed({ type: 'stream_event', event: { type: 'message_start' } });
+
+      expect(out).toEqual(['\n  Let me check', ' the timeline.', 'tags look like work…']);
+    });
+
+    it('claude: housekeeping deriver cuts a narration block at a line starting the JSON report', () => {
+      const start = (index: number): unknown => ({ type: 'stream_event', event: { type: 'content_block_start', index } });
+      const stop = (index: number): unknown => ({ type: 'stream_event', event: { type: 'content_block_stop', index } });
+      const text = (index: number, t: string): unknown => ({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index, delta: { type: 'text_delta', text: t } },
+      });
+      const derive = createClaudeDeltaDeriver('housekeeping');
+      const out: string[] = [];
+      const feed = (e: unknown): void => {
+        const d = derive(e);
+        if (d !== null) out.push(d);
+      };
+
+      // Block 0: contract-violating reply — prose head + fenced JSON in ONE
+      // block. Only the prose head may stream; the report is cut off.
+      feed(start(0));
+      feed(text(0, 'Here is the report:'));
+      feed(text(0, '\n```json\n{"analysis":{}}'));
+      feed(stop(0));
+
+      // Block 1: the boundary split across chunk edges — a trailing newline is
+      // held back so the next chunk's `{` still triggers the cut.
+      feed(start(1));
+      feed(text(1, 'working on it'));
+      feed(text(1, '\n'));
+      feed(text(1, '{"analysis":{}}'));
+      feed(stop(1));
+
+      // Block 2: the decision chunk itself carries prose + the report start.
+      feed(start(2));
+      feed(text(2, 'Note:\n{"analysis":{}}'));
+      feed(stop(2));
+
+      // Block 3: legit narration is untouched — `{` mid-line is not a boundary.
+      feed(start(3));
+      feed(text(3, 'the shape { a: 1 } looks fine'));
+      feed(stop(3));
+
+      expect(out).toEqual(['Here is the report:', 'working on it', 'Note:', 'the shape { a: 1 } looks fine']);
+    });
+
+    it('claude: non-housekeeping phases pass every text delta through', () => {
+      const text = (t: string): unknown => ({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: t } },
+      });
+      for (const phase of [undefined, 'chat'] as const) {
+        const derive = createClaudeDeltaDeriver(phase);
+        expect(derive(text('{"analysis":'))).toBe('{"analysis":');
+        expect(derive(text('plain'))).toBe('plain');
+      }
     });
 
     it('kimi: last assistant content wins, meta events ignored', () => {
@@ -295,6 +415,52 @@ describe('bridge adapters', () => {
         { name: 'Read', summary: 'package.json', status: 'start' },
         { name: 'Read', summary: 'package.json', status: 'ok' },
       ]);
+    });
+
+    it('claude: onDelta streams text_delta chunks live, interleaved with tool events', async () => {
+      process.env.PREVIOUSLY_BRIDGE_CLAUDE_CMD = fixtureCmd(fixtures.claudeDeltas);
+      const deltas: string[] = [];
+      const events: { name: string; status: string }[] = [];
+
+      const text = await claudeAdapter.dispatch(
+        { task: 't' },
+        { timeoutMs: 10_000, onEvent: (e) => events.push(e), onDelta: (d) => deltas.push(d) },
+      );
+      // The result event remains the source of truth.
+      expect(text).toBe('fixture claude delta answer');
+      // Only text_delta partials arrive; the input_json_delta is ignored.
+      expect(deltas).toEqual(['fixture ', 'claude delta ', 'answer']);
+      expect(events).toEqual([
+        { name: 'Bash', summary: 'ls -la', status: 'start' },
+        { name: 'Bash', summary: 'ls -la', status: 'ok' },
+      ]);
+    });
+
+    it('claude: onDelta requests --include-partial-messages; without a sink argv is unchanged', async () => {
+      const argvOut = join(home, 'argv.json');
+      process.env.PREVIOUSLY_BRIDGE_CLAUDE_CMD = fixtureCmd(fixtures.claude);
+      process.env.FIXTURE_ARGV_OUT = argvOut;
+
+      await claudeAdapter.dispatch({ task: 't' }, { timeoutMs: 10_000, onDelta: () => {} });
+      let argv = JSON.parse(readFileSync(argvOut, 'utf8')) as string[];
+      expect(argv).toContain('--include-partial-messages');
+
+      await claudeAdapter.dispatch({ task: 't' }, { timeoutMs: 10_000 });
+      argv = JSON.parse(readFileSync(argvOut, 'utf8')) as string[];
+      expect(argv).not.toContain('--include-partial-messages');
+    });
+
+    it('codex and kimi: never call onDelta (byte-identical streams)', async () => {
+      process.env.PREVIOUSLY_BRIDGE_CODEX_CMD = fixtureCmd(fixtures.codex);
+      process.env.PREVIOUSLY_BRIDGE_KIMI_CMD = fixtureCmd(fixtures.kimi);
+      let calls = 0;
+      const onDelta = (): void => {
+        calls += 1;
+      };
+
+      await codexAdapter.dispatch({ task: 't' }, { timeoutMs: 10_000, onDelta });
+      await kimiAdapter.dispatch({ task: 't' }, { timeoutMs: 10_000, onDelta });
+      expect(calls).toBe(0);
     });
 
     it('missing CLI fails honestly with cli-not-found', async () => {

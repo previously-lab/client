@@ -68,6 +68,27 @@ export const FIXTURE_CLAUDE_MANY_EVENTS = RECORDING_PREAMBLE + `function main() 
 }
 `;
 
+/**
+ * --include-partial-messages shape (verified on claude 2.1.204): token-level
+ * text_delta partials arrive as stream_event lines, interleaved with tool
+ * events. Includes one input_json_delta partial, which the bridge must ignore.
+ */
+export const FIXTURE_CLAUDE_DELTAS = RECORDING_PREAMBLE + `function main() {
+  const lines = [
+    JSON.stringify({ type: 'system', subtype: 'init', session_id: 'fixture-session', tools: [] }),
+    JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'fixture ' } } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls -la' } }] } }),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false, content: 'ok' }] } }),
+    JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'claude delta ' } } }),
+    JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{}' } } }),
+    JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'answer' } } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'fixture claude delta answer' }] } }),
+    JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'fixture claude delta answer', num_turns: 2 }),
+  ];
+  process.stdout.write(lines.join('\\n') + '\\n');
+}
+`;
+
 export const FIXTURE_KIMI = RECORDING_PREAMBLE + `function main() {
   const lines = [
     JSON.stringify({ role: 'meta', type: 'system.version', version: '0.0.0-fixture' }),
@@ -124,6 +145,7 @@ export interface FixtureClis {
   claude: string;
   claudeError: string;
   claudeManyEvents: string;
+  claudeDeltas: string;
   kimi: string;
   codex: string;
   codexError: string;
@@ -140,6 +162,7 @@ export function writeFixtureClis(dir: string): FixtureClis {
     claude: FIXTURE_CLAUDE,
     claudeError: FIXTURE_CLAUDE_ERROR,
     claudeManyEvents: FIXTURE_CLAUDE_MANY_EVENTS,
+    claudeDeltas: FIXTURE_CLAUDE_DELTAS,
     kimi: FIXTURE_KIMI,
     codex: FIXTURE_CODEX,
     codexError: FIXTURE_CODEX_ERROR,

@@ -9,16 +9,28 @@
 export type BridgeAgent = 'claude' | 'codex' | 'kimi';
 export const BRIDGE_AGENTS: BridgeAgent[] = ['claude', 'codex', 'kimi'];
 
+/**
+ * Phase outsourcing (experimental, design doc §phase-outsourcing): the kernel
+ * delegates a whole workflow phase as one bridge call. Absent = the legacy
+ * per-agent delegateTask path (generic memory skill doc in the workspace).
+ */
+export type BridgePhase = 'chat' | 'housekeeping';
+export const BRIDGE_PHASES: BridgePhase[] = ['chat', 'housekeeping'];
+
 /** The payload the kernel's delegateTask executor writes to our stdin. */
 export interface BridgeTask {
   task: string;
   context?: string | null;
   /**
    * Wire protocol version. Absent: raw result text on stdout (v1). 2: NDJSON
-   * envelope — live `{"event":...}` tool-event lines followed by a final
-   * `{"protocol":2,"result":...,"events":[...]}` line.
+   * envelope — live `{"event":...}` tool-event lines and (claude only)
+   * advisory `{"delta":...}` answer-text chunks, followed by a final
+   * `{"protocol":2,"result":...,"events":[...]}` line. The envelope remains
+   * the source of truth; deltas are presentation-only and may be discarded.
    */
   protocol?: 2;
+  /** When present, the workspace carries the phase-specific skill doc. */
+  phase?: BridgePhase;
 }
 
 /** One tool invocation as surfaced on the protocol-2 event stream. */
@@ -67,6 +79,13 @@ export interface DispatchOptions {
    * the CLI's NDJSON stream arrives. Absent sink = events are not derived.
    */
   onEvent?: (event: BridgeToolEvent) => void;
+  /**
+   * Live answer-text delta sink (protocol 2, claude adapter only): called with
+   * each text chunk as the CLI streams its answer. Advisory presentation only
+   * — the final result string stays the source of truth. Absent sink = no
+   * deltas are derived (codex/kimi never produce any).
+   */
+  onDelta?: (text: string) => void;
   /** Per-agent tuning from config.agents (model / effort flags). */
   tuning?: AgentTuning;
 }

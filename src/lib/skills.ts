@@ -286,11 +286,26 @@ export interface BridgeWorkspace {
 /**
  * Materialize the per-call bridge workspace: a temp dir carrying the
  * agent's cwd-convention instruction file with the memory protocol. The
- * caller owns cleanup (rm -rf the dir in a finally block).
+ * caller owns cleanup (rm -rf the dir in a finally block). `doc` overrides
+ * the document written (phase outsourcing); absent = the generic doc.
  */
-export function materializeBridgeWorkspace(agent: BridgeAgent, memoryRoot: string): BridgeWorkspace {
+export function materializeBridgeWorkspace(
+  agent: BridgeAgent,
+  memoryRoot: string,
+  doc?: string,
+): BridgeWorkspace {
   const dir = mkdtempSync(join(tmpdir(), 'previously-bridge-'));
   const filePath = join(dir, workspaceFileName(agent));
-  writeFileSync(filePath, renderSkillDoc(memoryRoot), 'utf8');
+  try {
+    writeFileSync(filePath, doc ?? renderSkillDoc(memoryRoot), 'utf8');
+  } catch (err) {
+    // Don't leak the just-created temp dir when the write itself fails.
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best-effort — the OS temp cleaner gets it
+    }
+    throw err;
+  }
   return { dir, filePath };
 }

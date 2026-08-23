@@ -87,8 +87,11 @@ export function getDeadPid(): number {
 /**
  * Write a small but realistic episodic memory tree under <home>/memory,
  * matching the agent repo's on-disk layout:
- *   episodic/timeline.md, episodic/timeline/index.json, episodic/strands.json
- *   episodic/slices/YYYY/MM/DD/HHMM/timeline/core.md (+ _index.json per month)
+ *   episodic/timeline.md, episodic/timeline/index.json, episodic/strands.json,
+ *   episodic/current-previously.md
+ *   episodic/slices/YYYY/MM/DD/HHMM/previously.md
+ *   episodic/slices/YYYY/MM/DD/HHMM/timeline/core.md + agent.md
+ *   (+ _index.json per month)
  * Returns the memory root.
  */
 export function writeFixtureMemory(home: string): string {
@@ -112,6 +115,31 @@ export function writeFixtureMemory(home: string): string {
       '好的，我们先从自进化这个主题开始。',
       '',
     ].join('\n'),
+    'utf8',
+  );
+  writeFileSync(
+    join(sliceDir, 'agent.md'),
+    [
+      '# Agent Timeline — 2026-08-10-1401',
+      '',
+      '## Turn a1b2c3 (user)',
+      '- classified intent: chat',
+      '- recalled: 面试准备',
+      '',
+      '## Turn d4e5f6 (agent)',
+      '- proposed strand: 面试准备',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  writeFileSync(
+    join(memory, 'episodic', 'slices', '2026', '08', '10', '1401', 'previously.md'),
+    ['# Previously (snapshot @ 2026-08-10-1401)', '', '- 正在准备 Apex Intelligence 面试', ''].join('\n'),
+    'utf8',
+  );
+  writeFileSync(
+    join(memory, 'episodic', 'current-previously.md'),
+    ['# Previously', '', '- 正在准备 Apex Intelligence 面试（周五）', '- 关注自进化话题', ''].join('\n'),
     'utf8',
   );
   writeFileSync(
