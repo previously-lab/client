@@ -82,8 +82,8 @@ describe('scribe commands', () => {
   });
 
   it('rejects unknown subcommands and bad --source values', async () => {
-    expect(await runScribe(['bogus'], { roots })).toBe(1);
-    expect(await runScribe(['once', '--source', 'not-a-source'], { roots })).toBe(1);
+    expect(await runScribe(['bogus'], { roots })).toBe(2);
+    expect(await runScribe(['once', '--source', 'not-a-source'], { roots })).toBe(2);
   });
 
   it('scribe once --source accepts the kimi-code and gemini sources', async () => {

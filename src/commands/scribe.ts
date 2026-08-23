@@ -53,14 +53,14 @@ export async function runScribe(args: string[], opts: ScribeCommandOptions = {})
   const [sub, ...rest] = args;
   if (sub !== 'once') {
     console.error(`Usage: previously scribe once [--source ${SCRIBE_SOURCES.join('|')}]`);
-    return 1;
+    return 2;
   }
   let source: ScribeSource | undefined;
   try {
     source = parseSourceArg(rest);
   } catch (err) {
     console.error(err instanceof Error ? err.message : err);
-    return 1;
+    return 2;
   }
 
   const paths = resolvePaths();

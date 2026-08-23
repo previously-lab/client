@@ -54,7 +54,20 @@ export interface ExecResult {
 export type ExecFn = (cmd: string, args: string[], opts?: { cwd?: string }) => ExecResult;
 
 export const defaultExec: ExecFn = (cmd, args, opts) => {
-  const res = spawnSync(cmd, args, { cwd: opts?.cwd, encoding: 'utf8', windowsHide: true });
+  const spawnOpts = { cwd: opts?.cwd, encoding: 'utf8', windowsHide: true } as const;
+  let res = spawnSync(cmd, args, spawnOpts);
+  // Windows: npm/corepack install shims (pnpm.cmd, pnpm.bat) cannot be spawned
+  // directly since Node's CVE-2024-27980 fix (EINVAL), and the bare name does
+  // not resolve the .cmd extension (ENOENT). Retry through cmd.exe, which
+  // resolves the shim itself. Our args are fixed literals, no injection surface.
+  if (
+    res.error &&
+    process.platform === 'win32' &&
+    ((res.error as NodeJS.ErrnoException).code === 'EINVAL' ||
+      (res.error as NodeJS.ErrnoException).code === 'ENOENT')
+  ) {
+    res = spawnSync('cmd.exe', ['/d', '/s', '/c', cmd, ...args], spawnOpts);
+  }
   return {
     status: res.status,
     stdout: res.stdout ?? '',

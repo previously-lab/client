@@ -57,7 +57,7 @@ describe('logs (kernel + scribe)', () => {
   it('rejects an unknown --source', async () => {
     home = useTempHome();
     capture();
-    expect(await logs(['-s', 'bogus'])).toBe(1);
+    expect(await logs(['-s', 'bogus'])).toBe(2);
     expect(stderr.join('\n')).toContain('Invalid --source');
   });
 

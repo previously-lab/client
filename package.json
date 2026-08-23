@@ -12,12 +12,13 @@
   "engines": {
     "node": ">=20"
   },
+  "packageManager": "pnpm@11.10.0",
   "previously": {
     "kernelLine": "0.8"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "test": "vitest run",
     "lint": "tsc -p tsconfig.json --noEmit",
     "prepare": "pnpm run build"

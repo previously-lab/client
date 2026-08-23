@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { findOnPath } from '../lib/detect.js';
 import { BridgeError, type BridgeAgent, type BridgeTask } from './types.js';
 
 /**
@@ -66,6 +67,32 @@ export interface ProcessOutcome {
 const KILL_GRACE_MS = 3_000;
 
 /**
+ * Windows: npm -g installs expose agent CLIs as `.cmd`/`.bat` shims, which
+ * cannot be spawned directly since Node's CVE-2024-27980 fix (EINVAL), and
+ * the bare name does not resolve the extension (ENOENT). When the command
+ * resolves to a shim, spawn it through the shell (`cmd.exe`) — the officially
+ * supported path. Real executables and POSIX take the direct route.
+ */
+export function resolveSpawnTarget(
+  command: string,
+  deps: { platform?: NodeJS.Platform; pathEnv?: string } = {},
+): { command: string; shell: boolean } {
+  const platform = deps.platform ?? process.platform;
+  if (platform !== 'win32') return { command, shell: false };
+  if (/\.(cmd|bat)$/i.test(command)) return { command, shell: true };
+  // Explicit paths that are not shims (e.g. fixture `node` binaries) spawn as-is.
+  if (command.includes('/') || command.includes('\\')) return { command, shell: false };
+  const resolved = findOnPath(command, {
+    pathEnv: deps.pathEnv ?? process.env.PATH ?? '',
+    platform,
+  });
+  if (resolved !== null && /\.(cmd|bat)$/i.test(resolved)) {
+    return { command: resolved, shell: true };
+  }
+  return { command, shell: false };
+}
+
+/**
  * Spawn a CLI, optionally pipe `input` to its stdin, capture stdout/stderr.
  * Never rejects: timeout, abort, and spawn failure are reported on the
  * outcome. Timeout and abort both SIGTERM first, then SIGKILL after a grace
@@ -105,10 +132,12 @@ export function runProcess(
       resolve({ code, stdout, stderr, timedOut, aborted, spawnError });
     };
 
-    const child = spawn(command, args, {
+    const target = resolveSpawnTarget(command);
+    const child = spawn(target.command, args, {
       cwd: opts.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
+      shell: target.shell,
     });
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');

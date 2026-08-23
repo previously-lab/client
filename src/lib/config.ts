@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { resolvePaths, type PreviouslyPaths } from './paths.js';
 
@@ -85,5 +85,15 @@ export function loadConfig(paths: PreviouslyPaths = resolvePaths()): PreviouslyC
 
 export function saveConfig(config: PreviouslyConfig, paths: PreviouslyPaths = resolvePaths()): void {
   mkdirSync(dirname(paths.configPath), { recursive: true });
-  writeFileSync(paths.configPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  // config.json carries plaintext API keys — owner-only on POSIX (mode only
+  // applies at creation, so chmod afterwards to tighten pre-existing files;
+  // Windows ACLs ignore this, which is fine).
+  writeFileSync(paths.configPath, JSON.stringify(config, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  if (process.platform !== 'win32') {
+    try {
+      chmodSync(paths.configPath, 0o600);
+    } catch {
+      // Best-effort hardening; the file contents are still correct.
+    }
+  }
 }

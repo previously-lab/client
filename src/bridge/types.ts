@@ -46,7 +46,6 @@ export type BridgeFailureReason =
   | 'cli-not-found'
   | 'cli-error'
   | 'timeout'
-  | 'malformed-stream'
   | 'empty-result'
   | 'aborted';
 

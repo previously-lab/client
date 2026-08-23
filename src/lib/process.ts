@@ -48,22 +48,40 @@ export async function waitForExit(pid: number, timeoutMs: number, intervalMs = 1
   return !isProcessAlive(pid);
 }
 
+/**
+ * Signal the process, and on POSIX its whole process group. The kernel and
+ * scribe are spawned `detached` (group leaders), so `-pid` reaches the
+ * children they spawned in turn (bridge-exec, agent CLIs) instead of leaving
+ * orphans. Falls back to the bare pid when the group is already gone.
+ */
+function killGroupOrProcess(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform === 'win32') {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // Already gone.
+    }
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
 /** Graceful-then-forceful termination; tolerates the process dying on its own. */
 export async function terminateProcess(pid: number, graceTimeoutMs: number): Promise<void> {
-  try {
-    process.kill(pid, 'SIGTERM');
-  } catch {
-    // Already gone.
-  }
+  killGroupOrProcess(pid, 'SIGTERM');
   if (await waitForExit(pid, graceTimeoutMs)) return;
   if (process.platform === 'win32') {
     spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
   } else {
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      // Already gone.
-    }
+    killGroupOrProcess(pid, 'SIGKILL');
   }
   await waitForExit(pid, 5_000);
 }

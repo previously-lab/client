@@ -57,7 +57,12 @@ export function sliceIdToRelDir(parts: SliceIdParts): string {
 export function assertInside(root: string, candidate: string): string {
   const resolvedRoot = resolve(root);
   const resolved = resolve(candidate);
-  if (resolved !== resolvedRoot && !resolved.startsWith(resolvedRoot + sep)) {
+  // Windows drive letters arrive in whatever case the user typed into
+  // config.json (`c:\…` vs the resolved `C:\…`); the FS is case-insensitive,
+  // so the containment check must be too.
+  const cmpRoot = process.platform === 'win32' ? resolvedRoot.toLowerCase() : resolvedRoot;
+  const cmp = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  if (cmp !== cmpRoot && !cmp.startsWith(cmpRoot + sep)) {
     throw new Error(`Path escapes memory root: ${candidate}`);
   }
   return resolved;
