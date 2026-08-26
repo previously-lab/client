@@ -14,7 +14,7 @@ export interface PreviouslyPaths {
   kernelDir: string;
   /** Versioned kernel installs live here: <kernelVersionsDir>/<version>/ */
   kernelVersionsDir: string;
-  /** JSON pointer to the active kernel version: { version, dir, previous? } */
+  /** JSON pointer to the active kernel version: { version, dir } */
   kernelCurrentPath: string;
   /** Scratch dir for the shallow clone of the agent repo during kernel install. */
   agentRepoCacheDir: string;

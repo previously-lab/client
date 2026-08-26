@@ -139,7 +139,7 @@ const dist = (name) => pathToFileURL(join(CLIENT_ROOT, 'dist', 'lib', name)).hre
 const { resolvePaths } = await import(dist('paths.js'));
 const { scanEnvironment } = await import(dist('detect.js'));
 const { installFromDir } = await import(dist('kernel.js'));
-const { getKernelLine } = await import(dist('version-policy.js'));
+const { getPinnedKernelVersion } = await import(dist('version-policy.js'));
 
 const paths = resolvePaths();
 
@@ -162,25 +162,21 @@ if (agent === null) {
 }
 
 step('Installing the kernel into ~/.previously');
-// Dev versions are timestamped patches on the supported line — always fresh,
-// never colliding with a real release.
-const version = `${getKernelLine()}.${Math.floor(Date.now() / 1000)}`;
-const install = installFromDir({ fromDir: standaloneDir, version, paths });
-console.log(`  kernel ${install.pointer.version} → ${install.pointer.dir}`);
-
-// Prune older timestamped dev versions so the versions dir does not grow
-// forever. Best-effort: a version whose kernel is currently RUNNING is
-// file-locked on Windows (EPERM) — skip it with a note instead of failing
-// the whole run; it gets pruned on a later run once stopped.
-for (const entry of readdirSync(paths.kernelVersionsDir, { withFileTypes: true })) {
-  if (entry.isDirectory() && /^\d+\.\d+\.\d{6,}$/.test(entry.name) && entry.name !== install.pointer.version) {
-    try {
-      rmSync(join(paths.kernelVersionsDir, entry.name), { recursive: true, force: true });
-    } catch (err) {
-      console.log(`  (kept ${entry.name}: ${err.code ?? err.message} — likely a running kernel; it will be pruned after \`previously stop\`)`);
-    }
+// Exact 1:1 version binding: the dev build installs AS the pinned version.
+// Reinstalling means wiping the previous install dir first — refused while a
+// kernel is running from it (file-locked on Windows).
+const version = getPinnedKernelVersion();
+const existingDir = join(paths.kernelVersionsDir, version);
+if (existsSync(existingDir)) {
+  try {
+    rmSync(existingDir, { recursive: true, force: true });
+  } catch (err) {
+    fail(`could not remove the previous dev install at ${existingDir} (${err.code ?? err.message}). ` +
+      'If a kernel is running, `previously stop` it first.');
   }
 }
+const install = installFromDir({ fromDir: standaloneDir, version, paths });
+console.log(`  kernel ${install.pointer.version} → ${install.pointer.dir}`);
 
 if (noStart) {
   step('Done (--no-start)');

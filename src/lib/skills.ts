@@ -49,6 +49,7 @@ export const SKILL_NAME = 'previously';
 export const LEGACY_SKILL_NAME = 'previously-memory';
 
 export const MEMORY_ROOT_PLACEHOLDER = '{{MEMORY_ROOT}}';
+export const PREVIOUSLY_CMD_PLACEHOLDER = '{{PREVIOUSLY_CMD}}';
 
 /** The canonical memory document. `{{MEMORY_ROOT}}` is filled at render time. */
 export const SKILL_DOC_TEMPLATE = `# Previously Memory (read-only)
@@ -593,23 +594,53 @@ export interface BridgeWorkspace {
   filePath: string;
 }
 
+export interface BridgeWorkspaceOptions {
+  /**
+   * Kernel-supplied skill documents from the bridge payload; each entry is
+   * written as `skills/<name>.md` inside the workspace, with the
+   * `{{PREVIOUSLY_CMD}}` / `{{MEMORY_ROOT}}` placeholders filled. Names must
+   * match [A-Za-z0-9_-]+ (they become file names; anything else is refused).
+   */
+  skills?: Record<string, string>;
+  /**
+   * The command prefix used to fill `{{PREVIOUSLY_CMD}}` in the skill
+   * documents. Defaults to the bare registered name `previously` — spawned
+   * agents run reader commands through their own shell, which resolves the
+   * global shim. The parameter exists for tests.
+   */
+  previouslyCmd?: string;
+}
+
 /**
  * Materialize the per-call bridge workspace: a temp dir carrying the
- * agent's cwd-convention instruction file with the memory protocol. The
- * caller owns cleanup (rm -rf the dir in a finally block). `doc` overrides
- * the document written (phase outsourcing); absent = the generic doc.
+ * agent's cwd-convention instruction file with the memory protocol, plus
+ * one `skills/<name>.md` per kernel-supplied skill entry. The caller owns
+ * cleanup (rm -rf the dir in a finally block). `doc` overrides the document
+ * written (phase outsourcing); absent = the generic doc.
  */
 export function materializeBridgeWorkspace(
   agent: BridgeAgent,
   memoryRoot: string,
   doc?: string,
+  opts: BridgeWorkspaceOptions = {},
 ): BridgeWorkspace {
   const dir = mkdtempSync(join(tmpdir(), 'previously-bridge-'));
   const filePath = join(dir, workspaceFileName(agent));
   try {
     writeFileSync(filePath, doc ?? renderSkillDoc(memoryRoot), 'utf8');
+    for (const [name, content] of Object.entries(opts.skills ?? {})) {
+      if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+        throw new Error(`Invalid skill name ${JSON.stringify(name)} (expected [A-Za-z0-9_-]+)`);
+      }
+      const filled = content
+        .split(PREVIOUSLY_CMD_PLACEHOLDER).join(opts.previouslyCmd ?? 'previously')
+        .split(MEMORY_ROOT_PLACEHOLDER).join(memoryRoot);
+      const skillsDir = join(dir, 'skills');
+      mkdirSync(skillsDir, { recursive: true });
+      writeFileSync(join(skillsDir, `${name}.md`), filled, 'utf8');
+    }
   } catch (err) {
-    // Don't leak the just-created temp dir when the write itself fails.
+    // Don't leak the just-created temp dir when a write itself fails.
     try {
       rmSync(dir, { recursive: true, force: true });
     } catch {

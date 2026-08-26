@@ -14,6 +14,7 @@ import { resolvePaths, type PreviouslyPaths } from './paths.js';
 import {
   checkCompat,
   formatSemver,
+  getPinnedKernelVersion,
   parseKernelVersionFromSource,
   parseSemver,
 } from './version-policy.js';
@@ -22,19 +23,21 @@ import {
  * Kernel supply chain (design doc §10.1/§10.2).
  *
  * The kernel artifact is the Next.js standalone build of the agent repo,
- * built from a given git ref and installed into versioned directories:
+ * built from the tag matching the client's pinned kernel version and
+ * installed into versioned directories:
  *
  *   <home>/kernel/versions/<version>/   standalone artifact (server.js, …)
- *   <home>/kernel/current.json          pointer: { version, dir, previous? }
+ *   <home>/kernel/current.json          pointer: { version, dir }
  *
  * A JSON pointer file is used instead of a symlink because symlinks on
  * Windows require privileges we cannot assume. Installs are atomic: the new
  * version is fully staged in a temp dir and renamed into place BEFORE the
- * pointer flips, so a failed install leaves the running setup untouched and
- * `previously kernel rollback` can always flip back.
+ * pointer flips, so a failed install leaves the running setup untouched.
+ * Client and kernel ship in lockstep — there is no rollback machinery;
+ * upgrading means upgrading the client package itself.
  *
  * External tool requirements (shell-outs via node:child_process, no npm
- * runtime deps): `git` for clone/ls-remote, `pnpm` for the repo build.
+ * runtime deps): `git` for clone, `pnpm` for the repo build.
  */
 
 /** Default agent repo the kernel is built from. */
@@ -92,7 +95,6 @@ function runOrThrow(exec: ExecFn, cmd: string, args: string[], cwd?: string): vo
 export interface KernelPointer {
   version: string;
   dir: string;
-  previous?: { version: string; dir: string };
 }
 
 /** Null when no kernel has ever been installed; throws on a corrupt pointer file. */
@@ -151,7 +153,7 @@ function stageAndSwitch(
   if (existsSync(targetDir)) {
     throw new Error(
       `Kernel ${version} is already installed at ${targetDir}. ` +
-        `Use \`previously kernel rollback\` to switch back to it, or remove that directory to reinstall.`,
+        `Remove that directory to reinstall.`,
     );
   }
   if (!existsSync(join(artifactDir, 'server.js'))) {
@@ -174,12 +176,7 @@ function stageAndSwitch(
     throw err;
   }
 
-  const prior = readCurrentPointer(paths);
-  const pointer: KernelPointer = {
-    version,
-    dir: targetDir,
-    ...(prior ? { previous: { version: prior.version, dir: prior.dir } } : {}),
-  };
+  const pointer: KernelPointer = { version, dir: targetDir };
   writeCurrentPointer(pointer, paths);
   return { pointer, switched: true };
 }
@@ -188,15 +185,15 @@ export interface InstallFromDirOptions {
   fromDir: string;
   version: string;
   paths?: PreviouslyPaths;
-  /** Kernel line override (tests); defaults to package.json previously.kernelLine. */
-  line?: string;
+  /** Pinned-version override (tests); defaults to package.json previously.kernelVersion. */
+  pinned?: string;
 }
 
 /**
  * `previously kernel install --from <dir> --version <x.y.z>` — escape hatch
  * that treats a local directory as an already-built standalone artifact.
  * Skips clone+build entirely (this is how tests exercise the full
- * install/switch/rollback logic without building Next.js).
+ * install/switch logic without building Next.js).
  */
 export function installFromDir(opts: InstallFromDirOptions): InstallResult {
   const paths = opts.paths ?? resolvePaths();
@@ -205,7 +202,7 @@ export function installFromDir(opts: InstallFromDirOptions): InstallResult {
     throw new Error(`Invalid --version "${opts.version}" (expected x.y.z)`);
   }
   const version = formatSemver(parsed);
-  const compat = checkCompat(version, opts.line);
+  const compat = checkCompat(version, opts.pinned);
   if (!compat.ok) throw new Error(compat.message);
   if (!existsSync(opts.fromDir)) {
     throw new Error(`--from directory does not exist: ${opts.fromDir}`);
@@ -215,21 +212,27 @@ export function installFromDir(opts: InstallFromDirOptions): InstallResult {
 
 export interface InstallFromRepoOptions {
   repo: string;
-  ref: string;
   paths?: PreviouslyPaths;
   exec?: ExecFn;
-  line?: string;
+  /** Pinned-version override (tests); defaults to package.json previously.kernelVersion. */
+  pinned?: string;
 }
 
 /**
- * `previously kernel install --repo <url> --ref <ref>` — shallow-clone the
- * agent repo at ref, `pnpm install --frozen-lockfile && pnpm build`, read the
- * real kernel version from src/lib/version/constants.ts (package.json there
- * is stale), then install .next/standalone/ into versions/<version>/.
+ * `previously kernel install [--repo <url>]` — shallow-clone the agent repo
+ * at the tag matching the client's pinned kernel version (`v<pinned>`),
+ * `pnpm install --frozen-lockfile && pnpm build`, read the real kernel
+ * version from src/lib/version/constants.ts (package.json there is stale),
+ * then install .next/standalone/ into versions/<version>/.
+ *
+ * There is no version selection: the pin IS the version. A missing tag is
+ * reported honestly (the kernel repo has not published the pinned release).
  */
 export function installFromRepo(opts: InstallFromRepoOptions): InstallResult {
   const paths = opts.paths ?? resolvePaths();
   const exec = opts.exec ?? defaultExec;
+  const pinned = opts.pinned ?? getPinnedKernelVersion();
+  const tag = `v${pinned}`;
   const cacheDir = paths.agentRepoCacheDir;
 
   // Fresh clone every install: no stale cache state to reason about. The
@@ -238,19 +241,16 @@ export function installFromRepo(opts: InstallFromRepoOptions): InstallResult {
   rmSync(cacheDir, { recursive: true, force: true });
   mkdirSync(dirname(cacheDir), { recursive: true });
 
-  // --branch covers branches and tags; a bare commit sha needs fetch+checkout.
-  const clone = exec(
-    'git',
-    ['clone', '--depth', '1', '--branch', opts.ref, opts.repo, cacheDir],
-  );
+  const clone = exec('git', ['clone', '--depth', '1', '--branch', tag, opts.repo, cacheDir]);
   if (clone.error) {
     throw new Error(`Failed to run \`git\`: ${clone.error.message}. git must be on PATH.`);
   }
   if (clone.status !== 0) {
     rmSync(cacheDir, { recursive: true, force: true });
-    runOrThrow(exec, 'git', ['clone', '--depth', '1', opts.repo, cacheDir]);
-    runOrThrow(exec, 'git', ['fetch', '--depth', '1', 'origin', opts.ref], cacheDir);
-    runOrThrow(exec, 'git', ['checkout', 'FETCH_HEAD'], cacheDir);
+    throw new Error(
+      `Could not clone ${opts.repo} at tag ${tag} (exit ${clone.status}):\n${clone.stderr.trim()}\n` +
+        `The pinned kernel version ${pinned} may not be published yet.`,
+    );
   }
 
   runOrThrow(exec, 'pnpm', ['install', '--frozen-lockfile'], cacheDir);
@@ -267,35 +267,11 @@ export function installFromRepo(opts: InstallFromRepoOptions): InstallResult {
   if (!version) {
     throw new Error(`Could not parse a version (x.y.z) from ${constantsPath}`);
   }
-  const compat = checkCompat(version, opts.line);
+  const compat = checkCompat(version, pinned);
   if (!compat.ok) throw new Error(compat.message);
 
   const standaloneDir = join(cacheDir, '.next', 'standalone');
   return stageAndSwitch(standaloneDir, version, paths);
-}
-
-/**
- * `previously kernel rollback` — flip the pointer back to the previous
- * version. The two most recent installs swap places, so a mistaken rollback
- * can itself be rolled back.
- */
-export function rollback(paths: PreviouslyPaths = resolvePaths()): KernelPointer {
-  const current = readCurrentPointer(paths);
-  if (!current) {
-    throw new Error('No kernel is installed — nothing to roll back.');
-  }
-  if (!current.previous) {
-    throw new Error(
-      `Kernel ${current.version} is the only installed version — there is no previous version to roll back to.`,
-    );
-  }
-  const pointer: KernelPointer = {
-    version: current.previous.version,
-    dir: current.previous.dir,
-    previous: { version: current.version, dir: current.dir },
-  };
-  writeCurrentPointer(pointer, paths);
-  return pointer;
 }
 
 export interface ResolvedKernel {

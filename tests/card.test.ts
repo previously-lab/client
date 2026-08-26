@@ -18,7 +18,31 @@ describe('card command', () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.PREVIOUSLY_READER_SCOPE;
     cleanupTempHome(home);
+  });
+
+  it('housekeeping scope allows the card read forms', async () => {
+    writeFixtureMemory(home);
+    saveConfig(defaultConfig(resolvePaths()), resolvePaths());
+    process.env.PREVIOUSLY_READER_SCOPE = 'housekeeping';
+
+    const code = await card([]);
+    expect(code).toBe(0);
+    expect(stdout.join('\n')).toContain('# Previously');
+  });
+
+  it('card bootstrap is refused under ANY non-empty scope (chat and housekeeping)', async () => {
+    for (const scope of ['chat', 'housekeeping', 'unknown-scope']) {
+      process.env.PREVIOUSLY_READER_SCOPE = scope;
+      const code = await card(['bootstrap', '--empty']);
+      expect(code).toBe(1);
+      const err = stderr.join('\n');
+      expect(err).toContain('card bootstrap');
+      expect(err).toContain('PREVIOUSLY_READER_SCOPE');
+      stderr = [];
+    }
+    expect(stdout).toEqual([]);
   });
 
   it('usage errors exit 2: positional arg, unknown flag, missing --slice value', async () => {

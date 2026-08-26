@@ -1,6 +1,7 @@
 import { loadConfig } from '../lib/config.js';
 import { MemoryError, readAgentTimeline } from '../lib/memory.js';
 import { resolvePaths } from '../lib/paths.js';
+import { assertReaderAllowed } from '../lib/reader-scope.js';
 
 /**
  * `previously agentlog <sliceId> [--start N --end N]` — the constrained
@@ -58,6 +59,13 @@ function parseArgs(args: string[]): ParsedArgs {
 }
 
 export async function run(args: string[]): Promise<number> {
+  // Phase scope gate (bridge outsourcing): refused before any arg parsing.
+  const denial = assertReaderAllowed('agentlog');
+  if (denial !== null) {
+    console.error(denial);
+    return 1;
+  }
+
   let parsed: ParsedArgs;
   try {
     parsed = parseArgs(args);

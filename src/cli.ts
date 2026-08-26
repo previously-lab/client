@@ -11,7 +11,6 @@ import * as launch from './commands/launch.js';
 import * as logs from './commands/logs.js';
 import * as open from './commands/open.js';
 import * as readslice from './commands/readslice.js';
-import * as recall from './commands/recall.js';
 import * as scribe from './commands/scribe.js';
 import * as slicesummary from './commands/slicesummary.js';
 import * as start from './commands/start.js';
@@ -19,7 +18,6 @@ import * as status from './commands/status.js';
 import * as stop from './commands/stop.js';
 import * as strands from './commands/strands.js';
 import * as timeline from './commands/timeline.js';
-import * as upgrade from './commands/upgrade.js';
 
 type CommandHandler = (args: string[]) => Promise<number>;
 
@@ -32,13 +30,11 @@ const commands: Record<string, CommandHandler> = {
   logs: logs.run,
   open: open.run,
   kernel: kernel.run,
-  upgrade: upgrade.run,
   scribe: scribe.runScribe,
   watch: scribe.runWatch,
   install: install.run,
   uninstall: install.runUninstall,
   'bridge-exec': bridgeExec.run,
-  recall: recall.run,
   readslice: readslice.run,
   timeline: timeline.run,
   strands: strands.run,
@@ -68,17 +64,15 @@ Advanced:
               --non-interactive --backend claude|codex|kimi|api-key|none
               --memory-root <path> --rebuild [--include-custom] --skip-ingest --json
               Every run audits and repairs a broken config (config.json.bak kept)
-  kernel      Manage kernel versions (install / list / current / rollback)
-  upgrade     Install the newest kernel release within the supported version line
+  kernel      Manage kernel versions (install / list / current)
   install     Write the "Previously" skill group for detected agent CLIs (--claude / --codex / --kimi / --all)
   uninstall   Remove the Previously skill group from agent configs
   watch       Run the scribe in the foreground (fs watch → time slices; start includes it)
   scribe      Scribe one-shot scan: scribe once [--source claude-code|codex|kimi-code|gemini]
   ingest      Admit external content into memory: --source (raw logs) / --submit (rendered slice, validated) / --mark (semantic marking, spends tokens)
   bridge-exec Subscription bridge entry for the kernel delegateTask tool (JSON on stdin, result on stdout)
-  recall      Constrained memory search for bridged agents: recall "<query>" (pointers only)
-  readslice   Constrained slice reader for bridged agents: readslice <sliceId> [--start N --end N]
-  timeline    Constrained timeline reader for bridged agents: timeline [--month YYYY-MM] [--day MM-DD]
+  readslice   Constrained slice reader for bridged agents: readslice <sliceId> [--start N --end N | --last N | --search <text> | --turns a-b]
+  timeline    Constrained timeline reader for bridged agents: timeline [--month YYYY-MM] [--day MM-DD] [--from YYYY-MM-DD --to YYYY-MM-DD]
   strands     Constrained strand reader for bridged agents: strands [name]
   card        Constrained card reader for bridged agents: card [--slice <sliceId>];
               card bootstrap builds the first 前情提要 after a history ingest (spends tokens)

@@ -18,7 +18,21 @@ describe('slicesummary command', () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.PREVIOUSLY_READER_SCOPE;
     cleanupTempHome(home);
+  });
+
+  it('housekeeping scope refuses slicesummary (exit 1, honest stderr, no stdout)', async () => {
+    writeFixtureMemory(home);
+    saveConfig(defaultConfig(resolvePaths()), resolvePaths());
+    process.env.PREVIOUSLY_READER_SCOPE = 'housekeeping';
+
+    const code = await slicesummary(['2026-08-10-1401']);
+    expect(code).toBe(1);
+    const err = stderr.join('\n');
+    expect(err).toContain('slicesummary');
+    expect(err).toContain('housekeeping');
+    expect(stdout).toEqual([]);
   });
 
   it('usage errors exit 2: missing id, extra positional', async () => {

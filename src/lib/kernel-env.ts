@@ -11,11 +11,12 @@ import type { PreviouslyPaths } from './paths.js';
  * MEMORY_ROOT / WORKFLOW_TARGET_WORLD / PORT / HOSTNAME) plus
  * PREVIOUSLY_HOME and PREVIOUSLY_BRIDGE_CMD; those are unchanged.
  *
- * PREVIOUSLY_BRIDGE_CMD is the REGISTERED command name, never an absolute
- * path into this checkout's build output: the client is an installed
- * application, and both the kernel and any bridged agent must invoke it the
- * same way the user does — `previously …`. This matches the kernel's own
- * default; the key is set explicitly only to document the contract.
+ * PREVIOUSLY_BRIDGE_CMD is the REGISTERED command name: the client is an
+ * installed application, and the kernel invokes it the same way the user
+ * does — `previously …`. Shim resolution (Windows .cmd shims cannot be
+ * spawned shell-less) is the KERNEL's job — its bridge spawn resolves bare
+ * command names against PATH and routes .cmd/.bat through cmd.exe (same
+ * treatment as this repo's own bridge runner).
  */
 export function buildKernelEnv(
   config: PreviouslyConfig,

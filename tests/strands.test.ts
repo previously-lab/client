@@ -18,7 +18,21 @@ describe('strands command', () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.PREVIOUSLY_READER_SCOPE;
     cleanupTempHome(home);
+  });
+
+  it('housekeeping scope refuses strands (exit 1, honest stderr, no stdout)', async () => {
+    writeFixtureMemory(home);
+    saveConfig(defaultConfig(resolvePaths()), resolvePaths());
+    process.env.PREVIOUSLY_READER_SCOPE = 'housekeeping';
+
+    const code = await strands([]);
+    expect(code).toBe(1);
+    const err = stderr.join('\n');
+    expect(err).toContain('strands');
+    expect(err).toContain('housekeeping');
+    expect(stdout).toEqual([]);
   });
 
   it('usage errors exit 2: extra positional, flag-like name', async () => {

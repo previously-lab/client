@@ -31,6 +31,13 @@ export interface BridgeTask {
   protocol?: 2;
   /** When present, the workspace carries the phase-specific skill doc. */
   phase?: BridgePhase;
+  /**
+   * Kernel-supplied skill documents (business logic lives in the kernel
+   * runtime and travels with the payload). Each entry is materialized as
+   * `skills/<name>.md` in the per-call workspace, with `{{PREVIOUSLY_CMD}}`
+   * / `{{MEMORY_ROOT}}` placeholders filled.
+   */
+  skills?: Record<string, string>;
 }
 
 /** One tool invocation as surfaced on the protocol-2 event stream. */

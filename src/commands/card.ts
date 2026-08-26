@@ -11,6 +11,7 @@ import {
 import { loadConfig, resolveBrainAgent } from '../lib/config.js';
 import { MemoryError, readCard } from '../lib/memory.js';
 import { resolvePaths } from '../lib/paths.js';
+import { assertReaderAllowed } from '../lib/reader-scope.js';
 
 /**
  * `previously card [--slice <sliceId>]` — the constrained card reader for
@@ -186,7 +187,17 @@ function parseReaderArgs(args: string[]): ParsedArgs {
 }
 
 export async function run(args: string[]): Promise<number> {
-  if (args[0] === 'bootstrap') {
+  // Phase scope gate (bridge outsourcing): the read forms are allowed in chat
+  // and housekeeping; `bootstrap` (token-spending init) is refused under ANY
+  // non-empty scope — bridge calls never run it.
+  const bootstrap = args[0] === 'bootstrap';
+  const denial = assertReaderAllowed(bootstrap ? 'card bootstrap' : 'card');
+  if (denial !== null) {
+    console.error(denial);
+    return 1;
+  }
+
+  if (bootstrap) {
     return runBootstrap(args.slice(1));
   }
 

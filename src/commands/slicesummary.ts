@@ -1,6 +1,7 @@
 import { loadConfig } from '../lib/config.js';
 import { MemoryError, readSliceSummary } from '../lib/memory.js';
 import { resolvePaths } from '../lib/paths.js';
+import { assertReaderAllowed } from '../lib/reader-scope.js';
 
 /**
  * `previously slicesummary <sliceId>` — the constrained slice-summary reader
@@ -25,6 +26,13 @@ export function truncateSummaryOutput(text: string, cap: number = SLICESUMMARY_O
 }
 
 export async function run(args: string[]): Promise<number> {
+  // Phase scope gate (bridge outsourcing): refused before any arg parsing.
+  const denial = assertReaderAllowed('slicesummary');
+  if (denial !== null) {
+    console.error(denial);
+    return 1;
+  }
+
   const [sliceId, ...rest] = args;
   if (sliceId === undefined || rest.length > 0) {
     console.error('Usage: previously slicesummary <sliceId>');

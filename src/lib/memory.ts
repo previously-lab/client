@@ -27,6 +27,10 @@ export interface TimelineFilter {
   month?: string;
   /** `MM-DD` — keep only that day within the (filtered) month. */
   day?: string;
+  /** `YYYY-MM-DD` — inclusive lower bound on day sections (date-window mode). */
+  from?: string;
+  /** `YYYY-MM-DD` — inclusive upper bound on day sections (date-window mode). */
+  to?: string;
 }
 
 export interface LineRange {
@@ -61,7 +65,9 @@ function episodicDir(memoryRoot: string): string {
  * Read the human timeline. Prefers `episodic/timeline.md`; falls back to the
  * machine index `episodic/timeline/index.json` when only that exists.
  * The optional month/day filter narrows timeline.md to the matching
- * `## YYYY-MM` / `### MM-DD` sections (it does not apply to the JSON index).
+ * `## YYYY-MM` / `### MM-DD` sections; the optional from/to date window
+ * (mutually exclusive with month/day) keeps the day sections whose full date
+ * falls inside the inclusive range. Neither filter applies to the JSON index.
  */
 export function readTimeline(memoryRoot: string, filter: TimelineFilter = {}): string {
   // Shape AND range — a 13th month / 45th day is a usage error, not a miss.
@@ -71,11 +77,29 @@ export function readTimeline(memoryRoot: string, filter: TimelineFilter = {}): s
   if (filter.day !== undefined && !/^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(filter.day)) {
     throw new MemoryError('invalid_args', `day must be MM-DD (month 01-12, day 01-31), got: ${filter.day}`);
   }
+  const dateRe = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+  if (filter.from !== undefined && !dateRe.test(filter.from)) {
+    throw new MemoryError('invalid_args', `from must be YYYY-MM-DD (a real month/day), got: ${filter.from}`);
+  }
+  if (filter.to !== undefined && !dateRe.test(filter.to)) {
+    throw new MemoryError('invalid_args', `to must be YYYY-MM-DD (a real month/day), got: ${filter.to}`);
+  }
+  if (
+    (filter.from !== undefined || filter.to !== undefined) &&
+    (filter.month !== undefined || filter.day !== undefined)
+  ) {
+    throw new MemoryError('invalid_args', '--from/--to cannot be combined with --month/--day');
+  }
+  if (filter.from !== undefined && filter.to !== undefined && filter.from > filter.to) {
+    throw new MemoryError('invalid_args', `from must be <= to, got: ${filter.from}..${filter.to}`);
+  }
 
   const mdPath = join(episodicDir(memoryRoot), 'timeline.md');
   if (existsSync(mdPath)) {
     const content = readFileSync(assertInside(memoryRoot, mdPath), 'utf8');
-    return filterTimeline(content, filter);
+    return filter.from !== undefined || filter.to !== undefined
+      ? filterTimelineByDate(content, filter)
+      : filterTimeline(content, filter);
   }
 
   const indexPath = join(episodicDir(memoryRoot), 'timeline', 'index.json');
@@ -132,6 +156,63 @@ function filterTimeline(content: string, filter: TimelineFilter): string {
   return result + '\n';
 }
 
+/**
+ * Narrow timeline.md text to the day sections whose full date (month heading
+ * + day heading) falls inside the inclusive [from, to] window. Month headings
+ * are kept only when they contain a matching day; the `# ` title is kept.
+ */
+function filterTimelineByDate(content: string, filter: TimelineFilter): string {
+  const lines = content.split(/\r?\n/);
+  const out: string[] = [];
+  let month = '';
+  let monthKept = false;
+  let inDay = false;
+  let sawEntry = false;
+  for (const line of lines) {
+    const monthMatch = /^## (\d{4}-\d{2})\b/.exec(line);
+    if (monthMatch) {
+      month = monthMatch[1]!;
+      monthKept = false;
+      inDay = false;
+      continue;
+    }
+    const dayMatch = /^### (\d{2}-\d{2})\b/.exec(line);
+    if (dayMatch) {
+      // Day headings are MM-DD; the year comes from the month heading.
+      const date = `${month.slice(0, 4)}-${dayMatch[1]}`;
+      inDay =
+        month !== '' &&
+        (filter.from === undefined || date >= filter.from) &&
+        (filter.to === undefined || date <= filter.to);
+      if (inDay) {
+        if (!monthKept) {
+          out.push(`## ${month}`);
+          monthKept = true;
+        }
+        out.push(line);
+      }
+      continue;
+    }
+    if (line.startsWith('# ')) {
+      // Top-level title — keep it for context.
+      out.push(line);
+      continue;
+    }
+    if (inDay) {
+      // Entry lines (`- **slice-id** …`) are the content; headings alone mean
+      // the filter matched nothing.
+      if (line.startsWith('- ')) sawEntry = true;
+      out.push(line);
+    }
+  }
+  const result = out.join('\n').trim();
+  if (result === '' || !sawEntry) {
+    const scope = `${filter.from ?? '…'}..${filter.to ?? '…'}`;
+    throw new MemoryError('not_found', `No timeline entries match date window: ${scope}`);
+  }
+  return result + '\n';
+}
+
 /** Resolve + read a file belonging to a slice (id strictly validated). */
 function readSliceFile(memoryRoot: string, sliceId: string, relFile: string, label: string): string {
   const parts = parseSliceId(sliceId);
@@ -176,6 +257,92 @@ function applyLineRange(content: string, range: LineRange): string {
 export function readSlice(memoryRoot: string, sliceId: string, range: LineRange = {}): string {
   const content = readSliceFile(memoryRoot, sliceId, 'timeline/core.md', 'slice');
   return applyLineRange(content, range);
+}
+
+/** The last N lines of a slice's conversation record (trailing newline excluded from the count). */
+export function readSliceTail(memoryRoot: string, sliceId: string, lastLines: number): string {
+  if (!Number.isInteger(lastLines) || lastLines < 1) {
+    throw new MemoryError('invalid_args', `last must be a positive integer, got: ${lastLines}`);
+  }
+  const content = readSliceFile(memoryRoot, sliceId, 'timeline/core.md', 'slice');
+  const lines = content.split(/\r?\n/);
+  const body = lines.at(-1) === '' ? lines.slice(0, -1) : lines;
+  return body.slice(-lastLines).join('\n') + '\n';
+}
+
+/** Default context lines above/below each --search hit. */
+export const SLICE_SEARCH_CONTEXT = 2;
+
+/**
+ * Substring search (case-insensitive) within ONE slice's conversation record.
+ * Returns the matching lines plus SLICE_SEARCH_CONTEXT lines of context, each
+ * line prefixed with its 1-based line number so a follow-up read can use
+ * --start/--end; disjoint ranges are separated by a `…` line. A no-match
+ * search is a success with an explicit "no matches" line, never a fabrication.
+ */
+export function searchSlice(memoryRoot: string, sliceId: string, text: string): string {
+  if (typeof text !== 'string' || text.trim() === '') {
+    throw new MemoryError('invalid_args', 'search text must be a non-empty string');
+  }
+  const content = readSliceFile(memoryRoot, sliceId, 'timeline/core.md', 'slice');
+  const lines = content.split(/\r?\n/);
+  const needle = text.toLowerCase();
+  const hits: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if ((lines[i] ?? '').toLowerCase().includes(needle)) hits.push(i);
+  }
+  if (hits.length === 0) {
+    return `No lines matching ${JSON.stringify(text)} in slice ${sliceId}.\n`;
+  }
+  const out: string[] = [];
+  let coveredUntil = -1;
+  for (const hit of hits) {
+    const from = Math.max(0, hit - SLICE_SEARCH_CONTEXT);
+    const to = Math.min(lines.length - 1, hit + SLICE_SEARCH_CONTEXT);
+    if (from > coveredUntil + 1 && coveredUntil >= 0) out.push('…');
+    for (let i = Math.max(from, coveredUntil + 1); i <= to; i++) {
+      out.push(`${i + 1}: ${lines[i]}`);
+    }
+    coveredUntil = Math.max(coveredUntil, to);
+  }
+  return out.join('\n') + '\n';
+}
+
+/** Turn heading written by the slicer: `## Turn <id> — <ISO timestamp> (user|agent)`. */
+const TURN_HEADER = /^## Turn [A-Za-z0-9_-]{1,16} — /;
+
+/**
+ * Read a 1-based inclusive range of turns from a slice's conversation record,
+ * delimited by the `## Turn …` headings (frontmatter excluded). A slice
+ * without machine-readable turn headings is reported honestly.
+ */
+export function readSliceTurns(
+  memoryRoot: string,
+  sliceId: string,
+  fromTurn: number,
+  toTurn: number,
+): string {
+  const content = readSliceFile(memoryRoot, sliceId, 'timeline/core.md', 'slice');
+  const lines = content.split(/\r?\n/);
+  const headers: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (TURN_HEADER.test(lines[i] ?? '')) headers.push(i);
+  }
+  if (headers.length === 0) {
+    throw new MemoryError(
+      'invalid_data',
+      `Slice ${sliceId} has no machine-readable turn structure (## Turn … headings) in timeline/core.md`,
+    );
+  }
+  if (!Number.isInteger(fromTurn) || !Number.isInteger(toTurn) || fromTurn < 1 || toTurn < fromTurn || toTurn > headers.length) {
+    throw new MemoryError(
+      'invalid_args',
+      `Invalid turn range ${fromTurn}-${toTurn} (slice ${sliceId} has ${headers.length} turn(s), 1-based inclusive)`,
+    );
+  }
+  const start = headers[fromTurn - 1]!;
+  const end = toTurn < headers.length ? headers[toTurn]! : lines.length;
+  return lines.slice(start, end).join('\n') + '\n';
 }
 
 /**

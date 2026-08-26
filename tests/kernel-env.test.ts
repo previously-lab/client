@@ -34,9 +34,9 @@ describe('buildKernelEnv (start env contract)', () => {
   });
 
   it('injects PREVIOUSLY_BRIDGE_CMD as the registered command name', () => {
-    // The client is an installed application: the kernel and bridged agents
-    // invoke it the same way the user does — never an absolute path into a
-    // checkout's build output.
+    // The client is an installed application: the kernel invokes it the same
+    // way the user does — `previously bridge-exec`. Resolving the shim
+    // (Windows .cmd needs cmd.exe) is the kernel spawn's job.
     const cmd = buildKernelEnv(config(), paths, {}).PREVIOUSLY_BRIDGE_CMD;
     expect(cmd).toBe('previously bridge-exec');
   });

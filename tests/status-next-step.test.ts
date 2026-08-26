@@ -1,3 +1,4 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { run as status } from '../src/commands/status.js';
 import { collectStatus, nextStepSuggestion } from '../src/lib/system-status.js';
@@ -33,6 +34,24 @@ describe('status next-step suggestion', () => {
     writePidFile(resolvePaths().scribePidPath, getDeadPid()); // scribe dead
     const s = await collectStatus(resolvePaths());
     expect(nextStepSuggestion(s)).toContain('previously stop && previously');
+  });
+
+  it('suggests upgrading the client package when the kernel is off the pin', async () => {
+    home = useTempHome();
+    writeConfigWithPort(await getFreePort());
+    writePidFile(resolvePaths().pidPath, process.pid); // kernel "alive"
+    writePidFile(resolvePaths().scribePidPath, process.pid); // scribe "alive"
+    const paths = resolvePaths();
+    mkdirSync(paths.kernelDir, { recursive: true });
+    writeFileSync(
+      paths.kernelCurrentPath,
+      JSON.stringify({ version: '0.10.0', dir: paths.kernelDir }),
+      'utf8',
+    );
+    const s = await collectStatus(resolvePaths());
+    expect(s.compat?.ok).toBe(false);
+    expect(nextStepSuggestion(s)).toContain('upgrade the client package');
+    expect(nextStepSuggestion(s)).not.toContain('previously upgrade');
   });
 
   it('status output ends with the suggestion line', async () => {

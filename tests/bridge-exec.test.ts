@@ -426,41 +426,54 @@ describe('bridge-exec phase outsourcing (phase payload field)', () => {
     vi.restoreAllMocks();
     delete process.env.PREVIOUSLY_BRIDGE_CLAUDE_CMD;
     delete process.env.FIXTURE_CWD_OUT;
+    delete process.env.FIXTURE_ENV_OUT;
+    delete process.env.PREVIOUSLY_READER_SCOPE;
     cleanupTempHome(home);
   });
 
-  const runWithWorkspace = async (stdin: string): Promise<{ claudeMd: string | null }> => {
+  const runWithWorkspace = async (
+    stdin: string,
+  ): Promise<{ claudeMd: string | null; skills: Record<string, string> | null; readerScope: string }> => {
     process.env.PREVIOUSLY_BRIDGE_CLAUDE_CMD = fixtureCmd(fixtures.claude);
     const cwdOut = join(home, 'cwd.json');
+    const envOut = join(home, 'env.txt');
     process.env.FIXTURE_CWD_OUT = cwdOut;
+    process.env.FIXTURE_ENV_OUT = envOut;
     const paths = resolvePaths();
     saveConfig({ ...defaultConfig(paths), executionBackend: 'claude' }, paths);
 
     const code = await bridgeExec([], { stdin });
     expect(code).toBe(0);
-    return JSON.parse(readFileSync(cwdOut, 'utf8')) as { claudeMd: string | null };
+    const rec = JSON.parse(readFileSync(cwdOut, 'utf8')) as {
+      claudeMd: string | null;
+      skills: Record<string, string> | null;
+    };
+    return { ...rec, readerScope: readFileSync(envOut, 'utf8') };
   };
 
-  it("phase 'chat' carries the chat doc (constrained recall/readslice contract), not the generic doc", async () => {
+  it("phase 'chat' carries the chat doc (constrained reader-tool contract), not the generic doc", async () => {
     const rec = await runWithWorkspace(JSON.stringify({ task: 't', context: null, phase: 'chat' }));
     expect(rec.claudeMd).not.toBeNull();
-    // The doc renders the {{PREVIOUSLY_CMD}} placeholder with the real
-    // invocation prefix (e.g. `"node" "cli.js" recall ...`), so assert on the
-    // command text without pinning the prefix.
-    expect(rec.claudeMd).toContain('recall "<query>"');
-    expect(rec.claudeMd).toContain('readslice <sliceId>');
+    // The doc renders the {{PREVIOUSLY_CMD}} placeholder with the bare
+    // registered command name (`previously readslice ...`) — the spawned
+    // agent invokes reader commands through its own shell, which resolves
+    // the global shim exactly like a user typing it would.
+    expect(rec.claudeMd).toContain('previously readslice <sliceId>');
+    expect(rec.claudeMd).not.toContain('recall "<query>"');
     expect(rec.claudeMd).not.toContain('{{PREVIOUSLY_CMD}}');
     expect(rec.claudeMd).toContain('rendered verbatim in a web chat UI');
     expect(rec.claudeMd).not.toContain('# Previously Memory (read-only)');
     expect(rec.claudeMd).not.toContain('{{MEMORY_ROOT}}');
   });
 
-  it("phase 'housekeeping' carries the housekeeping doc (JSON report contract), not the generic doc", async () => {
+  it("phase 'housekeeping' carries the thin housekeeping doc (rules defer to the task input)", async () => {
     const rec = await runWithWorkspace(JSON.stringify({ task: 't', context: null, phase: 'housekeeping' }));
     expect(rec.claudeMd).not.toBeNull();
-    expect(rec.claudeMd).toContain('EXACTLY one JSON object');
-    expect(rec.claudeMd).toContain('"mutations": CardMutation[]');
-    expect(rec.claudeMd).toContain('"op": "addSelfModel"');
+    expect(rec.claudeMd).toContain('task input');
+    expect(rec.claudeMd).toContain('NEVER write anything anywhere under the memory root');
+    // The mutation vocabulary / output schema moved to the kernel task text.
+    expect(rec.claudeMd).not.toContain('CardMutation');
+    expect(rec.claudeMd).not.toContain('EXACTLY one JSON object');
     expect(rec.claudeMd).not.toContain('# Previously Memory (read-only)');
     expect(rec.claudeMd).not.toContain('{{MEMORY_ROOT}}');
     expect(rec.claudeMd).not.toContain('{{PREVIOUSLY_CMD}}');
@@ -471,6 +484,60 @@ describe('bridge-exec phase outsourcing (phase payload field)', () => {
     const rec = await runWithWorkspace(payload('t'));
     expect(rec.claudeMd).toContain('Previously Memory');
     expect(rec.claudeMd).toContain(paths.memoryDir);
+  });
+
+  it('the spawned agent inherits PREVIOUSLY_READER_SCOPE matching the phase (reader gate)', async () => {
+    const chat = await runWithWorkspace(JSON.stringify({ task: 't', context: null, phase: 'chat' }));
+    expect(chat.readerScope).toBe('chat');
+
+    const hk = await runWithWorkspace(JSON.stringify({ task: 't', context: null, phase: 'housekeeping' }));
+    expect(hk.readerScope).toBe('housekeeping');
+
+    // Legacy path: no phase, no scope — the reader gate stays off.
+    const legacy = await runWithWorkspace(payload('t'));
+    expect(legacy.readerScope).toBe('');
+
+    // The gate env never leaks past the bridge-exec call itself.
+    expect(process.env.PREVIOUSLY_READER_SCOPE).toBeUndefined();
+  });
+
+  it('payload skills are materialized as skills/<name>.md with placeholders filled', async () => {
+    const paths = resolvePaths();
+    const rec = await runWithWorkspace(
+      JSON.stringify({
+        task: 't',
+        context: null,
+        phase: 'chat',
+        skills: {
+          recall:
+            '# Recall\n\nSearch with `{{PREVIOUSLY_CMD}} timeline` under {{MEMORY_ROOT}}; report pointers only.\n',
+        },
+      }),
+    );
+    expect(rec.skills).not.toBeNull();
+    const recallSkill = rec.skills!['recall.md'];
+    expect(recallSkill).toBeDefined();
+    expect(recallSkill).not.toContain('{{PREVIOUSLY_CMD}}');
+    expect(recallSkill).not.toContain('{{MEMORY_ROOT}}');
+    expect(recallSkill).toContain('previously timeline');
+    expect(recallSkill).toContain(paths.memoryDir);
+  });
+
+  it('no skills key → no skills directory in the workspace', async () => {
+    const rec = await runWithWorkspace(JSON.stringify({ task: 't', context: null, phase: 'chat' }));
+    expect(rec.skills).toBeNull();
+  });
+
+  it('a malformed skills value exits 2', async () => {
+    for (const skills of [42, 'x', [1], { recall: 42 }]) {
+      const code = await bridgeExec(['--agent', 'claude'], {
+        stdin: JSON.stringify({ task: 't', skills }),
+      });
+      expect(code).toBe(2);
+      expect(stderr.join('\n')).toContain('"skills');
+      stderr = [];
+    }
+    expect(stdout).toEqual([]);
   });
 
   it('an invalid phase value exits 2', async () => {

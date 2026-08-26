@@ -22,7 +22,8 @@ import { materializeBridgeWorkspace } from '../lib/skills.js';
  * contract (agent repo delegateTask executor, design §7):
  *
  *   stdin:  {"task": string, "context": string | null, "protocol"?: 2,
- *            "phase"?: "chat" | "housekeeping"}                          (JSON)
+ *            "phase"?: "chat" | "housekeeping",
+ *            "skills"?: { <name>: <markdown text> }}                     (JSON)
  *   stdout: protocol absent — the adapter's final result text (raw, no framing)
  *           protocol 2      — NDJSON: one {"event":{name,summary,status}} line
  *           per tool event and (claude only) advisory {"delta":<text chunk>}
@@ -46,9 +47,20 @@ import { materializeBridgeWorkspace } from '../lib/skills.js';
  * AGENTS.md for codex/kimi), with MEMORY_ROOT filled from config. The
  * document is the generic "Previously memory" skill — or, when the payload
  * carries `phase` (experimental phase outsourcing), the phase-specific doc:
- * 'chat' (constrained recall/readslice tool contract) or 'housekeeping'
- * (analysis + evolution JSON report contract). The workspace is removed in
- * a finally block after the call.
+ * 'chat' (constrained reader-tool contract) or 'housekeeping' (read-only
+ * evidence rules; the analysis/output spec travels in the task input).
+ * Payload `skills` entries are materialized as `skills/<name>.md` beside it.
+ * Docs and skills alike render `{{PREVIOUSLY_CMD}}` as the bare registered
+ * command name (`previously`): the spawned agent invokes reader commands
+ * through its own shell, which resolves the global shim exactly like a user
+ * typing it. The workspace is removed in a finally block after the
+ * call.
+ *
+ * When the payload carries `phase`, the spawned agent also inherits
+ * PREVIOUSLY_READER_SCOPE=<phase>: the reader commands hard-gate themselves
+ * on it (see src/lib/reader-scope.ts) — housekeeping loses timeline/strands/
+ * slicesummary, and `card bootstrap` is refused under any scope. Without a
+ * phase the env is left untouched (legacy path: everything allowed).
  */
 
 export interface BridgeExecOptions {
@@ -92,11 +104,30 @@ function parsePayload(raw: string): BridgeTask {
   if (rec.phase !== undefined && !isBridgePhase(rec.phase)) {
     throw new Error(`stdin payload "phase" must be one of ${BRIDGE_PHASES.join('|')} when present`);
   }
+  let skills: Record<string, string> | undefined;
+  if (rec.skills !== undefined) {
+    if (typeof rec.skills !== 'object' || rec.skills === null || Array.isArray(rec.skills)) {
+      throw new Error('stdin payload "skills" must be an object mapping skill names to markdown strings');
+    }
+    skills = {};
+    for (const [name, content] of Object.entries(rec.skills)) {
+      if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+        throw new Error(
+          `stdin payload "skills" keys must match [A-Za-z0-9_-]+ (they become file names), got: ${JSON.stringify(name)}`,
+        );
+      }
+      if (typeof content !== 'string') {
+        throw new Error(`stdin payload "skills.${name}" must be a string`);
+      }
+      skills[name] = content;
+    }
+  }
   return {
     task: rec.task,
     context: (rec.context as string | null | undefined) ?? null,
     ...(rec.protocol === 2 ? { protocol: 2 as const } : {}),
     ...(rec.phase !== undefined ? { phase: rec.phase } : {}),
+    ...(skills !== undefined ? { skills } : {}),
   };
 }
 
@@ -156,13 +187,26 @@ export async function run(args: string[], opts: BridgeExecOptions = {}): Promise
   // its cwd-convention instruction file (CLAUDE.md / AGENTS.md) filled with
   // the skill document — the phase-specific doc when the payload delegates a
   // whole workflow phase, else the generic memory doc (legacy delegateTask
-  // path, byte-compatible). Phase docs invoke the client by its registered
-  // command name (`previously …`), same as a user-level install.
+  // path, byte-compatible). Payload `skills` entries are materialized as
+  // skills/<name>.md beside it. Docs and skills alike render
+  // `{{PREVIOUSLY_CMD}}` as the bare registered command name: the spawned
+  // agent invokes reader commands through its own shell, which resolves the
+  // global `previously` shim exactly like a user typing it would.
   const workspace = materializeBridgeWorkspace(
     agent,
     memoryRoot,
     task.phase !== undefined ? renderPhaseSkillDoc(task.phase, memoryRoot) : undefined,
+    { skills: task.skills },
   );
+
+  // Phase outsourcing: the spawned agent inherits this scope and the reader
+  // commands hard-gate on it (src/lib/reader-scope.ts). This process lives
+  // for one call; restore the previous value in finally so in-process
+  // callers (tests) never leak a scope.
+  const previousScope = process.env.PREVIOUSLY_READER_SCOPE;
+  if (task.phase !== undefined) {
+    process.env.PREVIOUSLY_READER_SCOPE = task.phase;
+  }
 
   // Forward termination to the CLI child: kill-on-SIGTERM, no orphans.
   const controller = new AbortController();
@@ -207,6 +251,10 @@ export async function run(args: string[], opts: BridgeExecOptions = {}): Promise
   } finally {
     process.removeListener('SIGINT', onSignal);
     process.removeListener('SIGTERM', onSignal);
+    if (task.phase !== undefined) {
+      if (previousScope === undefined) delete process.env.PREVIOUSLY_READER_SCOPE;
+      else process.env.PREVIOUSLY_READER_SCOPE = previousScope;
+    }
     // Workspace cleanup is best-effort: a locked temp dir must never fail a
     // call that already produced its result.
     try {

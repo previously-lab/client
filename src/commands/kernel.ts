@@ -5,7 +5,6 @@ import {
   installFromRepo,
   listInstalledVersions,
   readCurrentPointer,
-  rollback,
   type ExecFn,
 } from '../lib/kernel.js';
 import { resolvePaths } from '../lib/paths.js';
@@ -16,25 +15,27 @@ export interface KernelCommandDeps {
 }
 
 function usage(): void {
-  console.log(`previously kernel — manage kernel versions
+  console.log(`previously kernel — manage the pinned kernel version
 
 Usage: previously kernel <subcommand>
 
 Subcommands:
-  install   Install a kernel version and switch to it
+  install   Install the pinned kernel version and switch to it
             --from <dir> --version <x.y.z>   use an already-built standalone dir (skips clone+build)
-            --repo <git-url> --ref <branch|tag|sha>   clone & build from the agent repo
+            --repo <git-url>                 clone & build the pinned tag from the agent repo
             (defaults: --repo ${DEFAULT_KERNEL_REPO})
   list      List installed kernel versions (* marks the current one)
   current   Show the active kernel version
-  rollback  Switch back to the previously installed version
+
+The client is pinned to one exact kernel version (package.json
+previously.kernelVersion); upgrading means upgrading the client package.
 
 Requires git (and, for repo builds, pnpm) on PATH.
 `);
 }
 
 /**
- * `previously kernel …` — install/list/current/rollback subcommands for the
+ * `previously kernel …` — install/list/current subcommands for the
  * versioned kernel supply chain (design doc §10.1/§10.2).
  */
 export async function run(args: string[], deps: KernelCommandDeps = {}): Promise<number> {
@@ -47,8 +48,6 @@ export async function run(args: string[], deps: KernelCommandDeps = {}): Promise
         return list();
       case 'current':
         return current();
-      case 'rollback':
-        return rollbackCmd();
       default:
         if (sub === '--help' || sub === '-h') {
           usage();
@@ -71,7 +70,6 @@ function install(args: string[], deps: KernelCommandDeps): number {
       from: { type: 'string' },
       version: { type: 'string' },
       repo: { type: 'string' },
-      ref: { type: 'string' },
     },
   });
 
@@ -83,24 +81,14 @@ function install(args: string[], deps: KernelCommandDeps): number {
     const { pointer } = installFromDir({ fromDir: values.from, version: values.version });
     console.log(`Installed kernel ${pointer.version} from ${values.from}`);
     console.log(`Current kernel is now ${pointer.version} (${pointer.dir})`);
-    if (pointer.previous) {
-      console.log(`Previous version ${pointer.previous.version} kept — \`previously kernel rollback\` switches back.`);
-    }
     return 0;
   }
 
   const repo = values.repo ?? DEFAULT_KERNEL_REPO;
-  if (values.ref === undefined) {
-    console.error('install requires --ref <branch|tag|sha> (or --from <dir> --version <x.y.z>)');
-    return 1;
-  }
-  console.log(`Building kernel from ${repo}@${values.ref} (this can take a few minutes)…`);
-  const { pointer } = installFromRepo({ repo, ref: values.ref, exec: deps.exec });
+  console.log(`Building the pinned kernel from ${repo} (this can take a few minutes)…`);
+  const { pointer } = installFromRepo({ repo, exec: deps.exec });
   console.log(`Installed kernel ${pointer.version}`);
   console.log(`Current kernel is now ${pointer.version} (${pointer.dir})`);
-  if (pointer.previous) {
-    console.log(`Previous version ${pointer.previous.version} kept — \`previously kernel rollback\` switches back.`);
-  }
   return 0;
 }
 
@@ -125,14 +113,5 @@ function current(): number {
     return 1;
   }
   console.log(`${pointer.version} (${pointer.dir})`);
-  return 0;
-}
-
-function rollbackCmd(): number {
-  const pointer = rollback(resolvePaths());
-  console.log(`Rolled back to kernel ${pointer.version} (${pointer.dir})`);
-  if (pointer.previous) {
-    console.log(`Previous version is now ${pointer.previous.version} — another rollback swaps back.`);
-  }
   return 0;
 }

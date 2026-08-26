@@ -86,7 +86,7 @@ export async function run(args: string[], opts: StartOptions = {}): Promise<numb
     console.error(`Kernel artifact not found: ${serverJs}`);
     console.error('');
     console.error('The Previously kernel is the standalone build produced by the agent repo.');
-    console.error('Install one with `previously kernel install --ref <ref>` (builds from source),');
+    console.error('Install one with `previously kernel install` (builds the pinned version from source),');
     console.error(`or place a standalone build (including server.js) in ${paths.kernelDir},`);
     console.error(`or set "kernelDir" in ${paths.configPath} to point at one.`);
     return 1;

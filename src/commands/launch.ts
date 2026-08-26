@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { countScribeSlices } from '../lib/ingest.js';
 import { resolvePaths } from '../lib/paths.js';
 import { collectStatus, nextStepSuggestion, type SystemStatus } from '../lib/system-status.js';
-import { getKernelLine } from '../lib/version-policy.js';
+import { getPinnedKernelVersion } from '../lib/version-policy.js';
 import { SCRIBE_SOURCES } from '../scribe/types.js';
 import { run as initRun, type InitOptions } from './init.js';
 import { formatScribeSource, run as statusRun } from './status.js';
@@ -41,7 +41,7 @@ function printDashboard(s: SystemStatus): void {
   if (s.kernelAlive) console.log('           stop with `previously stop`');
   if (s.kernelVersion !== null) {
     console.log(
-      `Version:   ${s.kernelVersion} (line ${getKernelLine()}.x — ${s.compat!.ok ? 'compatible' : 'INCOMPATIBLE'})`,
+      `Version:   ${s.kernelVersion} (pinned ${getPinnedKernelVersion()} — ${s.compat!.ok ? 'compatible' : 'INCOMPATIBLE'})`,
     );
   }
   console.log(`Scribe:    ${s.scribeAlive ? `running (pid ${s.scribePid})` : 'not running'}`);

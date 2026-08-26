@@ -18,7 +18,29 @@ describe('timeline command', () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.PREVIOUSLY_READER_SCOPE;
     cleanupTempHome(home);
+  });
+
+  it('housekeeping scope refuses timeline (exit 1, honest stderr, no stdout)', async () => {
+    writeFixtureMemory(home);
+    saveConfig(defaultConfig(resolvePaths()), resolvePaths());
+    process.env.PREVIOUSLY_READER_SCOPE = 'housekeeping';
+
+    const code = await timeline([]);
+    expect(code).toBe(1);
+    const err = stderr.join('\n');
+    expect(err).toContain('timeline');
+    expect(err).toContain('housekeeping');
+    expect(stdout).toEqual([]);
+  });
+
+  it('an unknown scope value is refused like housekeeping', async () => {
+    process.env.PREVIOUSLY_READER_SCOPE = 'deep-think';
+
+    const code = await timeline([]);
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
   });
 
   it('usage errors exit 2: positional arg, unknown flag, missing flag value', async () => {
@@ -84,6 +106,69 @@ describe('timeline command', () => {
     const code = await timeline(['--month', '2026/08']);
     expect(code).toBe(1);
     expect(stderr.join('\n')).toContain('[invalid_args]');
+    expect(stdout).toEqual([]);
+  });
+
+  it('--from/--to narrow to an inclusive date window across months', async () => {
+    writeFixtureMemory(home);
+    saveConfig(defaultConfig(resolvePaths()), resolvePaths());
+
+    const code = await timeline(['--from', '2026-07-28', '--to', '2026-08-09']);
+    expect(code).toBe(0);
+    const out = stdout.join('\n');
+    expect(out).toContain('### 08-09');
+    expect(out).toContain('版本更新讨论');
+    expect(out).toContain('## 2026-07');
+    expect(out).toContain('第一次见面');
+    expect(out).not.toContain('面试准备');
+  });
+
+  it('--from alone keeps everything from that date on', async () => {
+    writeFixtureMemory(home);
+    saveConfig(defaultConfig(resolvePaths()), resolvePaths());
+
+    const code = await timeline(['--from', '2026-08-01']);
+    expect(code).toBe(0);
+    const out = stdout.join('\n');
+    expect(out).toContain('## 2026-08');
+    expect(out).toContain('面试准备');
+    expect(out).not.toContain('## 2026-07');
+    expect(out).not.toContain('第一次见面');
+  });
+
+  it('--to alone keeps everything up to that date', async () => {
+    writeFixtureMemory(home);
+    saveConfig(defaultConfig(resolvePaths()), resolvePaths());
+
+    const code = await timeline(['--to', '2026-07-31']);
+    expect(code).toBe(0);
+    const out = stdout.join('\n');
+    expect(out).toContain('## 2026-07');
+    expect(out).not.toContain('## 2026-08');
+  });
+
+  it('date-window usage errors exit 1 with invalid_args', async () => {
+    writeFixtureMemory(home);
+    saveConfig(defaultConfig(resolvePaths()), resolvePaths());
+
+    expect(await timeline(['--from', '2026-13-01'])).toBe(1);
+    expect(stderr.join('\n')).toContain('[invalid_args]');
+    stderr = [];
+    expect(await timeline(['--from', '2026-08-10', '--to', '2026-08-01'])).toBe(1);
+    expect(stderr.join('\n')).toContain('[invalid_args]');
+    stderr = [];
+    expect(await timeline(['--from', '2026-08-01', '--month', '2026-08'])).toBe(1);
+    expect(stderr.join('\n')).toContain('[invalid_args]');
+    expect(stdout).toEqual([]);
+  });
+
+  it('a date window matching nothing exits 1 with not_found', async () => {
+    writeFixtureMemory(home);
+    saveConfig(defaultConfig(resolvePaths()), resolvePaths());
+
+    const code = await timeline(['--from', '2025-01-01', '--to', '2025-01-31']);
+    expect(code).toBe(1);
+    expect(stderr.join('\n')).toContain('[not_found]');
     expect(stdout).toEqual([]);
   });
 

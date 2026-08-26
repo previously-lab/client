@@ -117,6 +117,6 @@ export function nextStepSuggestion(s: SystemStatus): string | null {
   if (!s.initialized) return 'run `previously init` to create the layout and a default config';
   if (!s.kernelAlive) return 'run `previously start` to start the kernel';
   if (s.kernelAlive && !s.scribeAlive) return 'run `previously stop && previously start` to restart (scribe is dead)';
-  if (s.compat !== null && !s.compat.ok) return 'upgrade the client — the installed kernel is outside the supported version line';
+  if (s.compat !== null && !s.compat.ok) return 'upgrade the client package — the installed kernel does not match the pinned kernel version';
   return null;
 }

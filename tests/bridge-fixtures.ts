@@ -17,7 +17,10 @@ import { join } from 'node:path';
  * Every fixture records how it was invoked: stdin goes to FIXTURE_STDIN_OUT
  * and argv to FIXTURE_ARGV_OUT when those env vars are set, so tests can
  * assert prompt transport. FIXTURE_CWD_OUT additionally records the child's
- * cwd plus any CLAUDE.md / AGENTS.md found there (bridge workspace checks).
+ * cwd plus any CLAUDE.md / AGENTS.md found there (bridge workspace checks)
+ * and the contents of any skills/ directory (payload skills materialization).
+ * FIXTURE_ENV_OUT records the inherited PREVIOUSLY_READER_SCOPE value
+ * (empty string when unset) so tests can assert the reader-scope gate.
  */
 
 const RECORDING_PREAMBLE = `const fs = require('node:fs');
@@ -27,9 +30,17 @@ process.stdin.on('data', (d) => (stdinData += d));
 process.stdin.on('end', () => {
   if (process.env.FIXTURE_STDIN_OUT) fs.writeFileSync(process.env.FIXTURE_STDIN_OUT, stdinData, 'utf8');
   if (process.env.FIXTURE_ARGV_OUT) fs.writeFileSync(process.env.FIXTURE_ARGV_OUT, JSON.stringify(process.argv.slice(2)), 'utf8');
+  if (process.env.FIXTURE_ENV_OUT) fs.writeFileSync(process.env.FIXTURE_ENV_OUT, process.env.PREVIOUSLY_READER_SCOPE ?? '', 'utf8');
   if (process.env.FIXTURE_CWD_OUT) {
     const read = (f) => { try { return fs.readFileSync(path.join(process.cwd(), f), 'utf8'); } catch { return null; } };
-    fs.writeFileSync(process.env.FIXTURE_CWD_OUT, JSON.stringify({ cwd: process.cwd(), claudeMd: read('CLAUDE.md'), agentsMd: read('AGENTS.md') }), 'utf8');
+    let skills = null;
+    try {
+      skills = {};
+      for (const f of fs.readdirSync(path.join(process.cwd(), 'skills'))) {
+        skills[f] = fs.readFileSync(path.join(process.cwd(), 'skills', f), 'utf8');
+      }
+    } catch { skills = null; }
+    fs.writeFileSync(process.env.FIXTURE_CWD_OUT, JSON.stringify({ cwd: process.cwd(), claudeMd: read('CLAUDE.md'), agentsMd: read('AGENTS.md'), skills }), 'utf8');
   }
   main();
 });

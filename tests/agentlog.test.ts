@@ -18,7 +18,18 @@ describe('agentlog command', () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.PREVIOUSLY_READER_SCOPE;
     cleanupTempHome(home);
+  });
+
+  it('housekeeping scope allows agentlog (card-evolution forensics)', async () => {
+    writeFixtureMemory(home);
+    saveConfig(defaultConfig(resolvePaths()), resolvePaths());
+    process.env.PREVIOUSLY_READER_SCOPE = 'housekeeping';
+
+    const code = await agentlog(['2026-08-10-1401']);
+    expect(code).toBe(0);
+    expect(stdout.join('\n')).toContain('Agent Timeline');
   });
 
   it('usage errors exit 2: missing id, extra positional, unknown flag, bad range value', async () => {

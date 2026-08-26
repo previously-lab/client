@@ -44,7 +44,7 @@ pnpm dev
 - 识别到 **0 个** agent 仓库：报错并提示克隆到平级目录；识别到**多个**：列出候选并要求明确指定（不替你猜）。指定方式：在本仓库根目录建 `dev.env`（已 gitignore，每台机器各自的本地文件，格式 `KEY=VALUE`、`#` 注释），写入 `PREVIOUSLY_AGENT_REPO=<绝对路径>`；也可以用同名 shell 环境变量，环境变量优先于 `dev.env`。不需要、也不应设置系统/用户级全局环境变量。
 - `pnpm dev --fast`：跳过内核构建，复用 agent 仓库已有的 `.next/standalone`（只改了 client 时用）。
 - `pnpm dev --no-start`：只构建 + 初始化 + 装内核，不启动服务（脚本/CI 用）。
-- 每次安装使用版本线内的时间戳 patch 版本（如 `0.8.<epoch>`），旧的时间戳版本会自动清理；回滚仍可用 `previously kernel rollback`。
+- 每次（重）安装都以钉死版本（package.json `previously.kernelVersion`）落盘；重装前会先清掉旧的同版本目录（内核正在运行时需先 `previously stop`）。
 - 只想调试 agent 仓库本身：在其目录 `pnpm dev`(Next dev server),client 模式的设置区块在 `PREVIOUSLY_MODE=client` 下才会出现在设置页。
 
 ## 快速开始
@@ -58,13 +58,13 @@ previously                   # 唯一需要记住的命令
 
 `previously init` 与裸命令共用同一套初始化流程。agent/脚本用法：`previously init --non-interactive --backend <claude|codex|kimi> [--memory-root <path>] [--json]`；`--rebuild` 丢弃全部转录时间片并从原始日志重建（`--include-custom` 连外部提交内容一起清；内核自己的对话永不动），`--skip-ingest` 只建布局与配置。所有交互式提问都有对应 flag，永不阻塞。选 bridge 后端会顺带把 `brain` 写入 config（订阅模式，无需 API key）。**每次 init 都会审计并修复损坏的 config**（缺 brain、非法端口/后端值、JSON 损坏等，修复前自动备份 `config.json.bak`）；`previously start` 在未初始化时会先自动走 init，且每次启动前也会跑同一套配置审计，保证内核永远拿到合法环境。
 
-命令面分两层——日常：`（无命令）` / `start` / `stop` / `status` / `logs` / `open`；高级：`init` / `kernel` / `upgrade` / `install` / `uninstall` / `watch` / `scribe` / `ingest` / `bridge-exec`。
+命令面分两层——日常：`（无命令）` / `start` / `stop` / `status` / `logs` / `open`；高级：`init` / `kernel` / `install` / `uninstall` / `watch` / `scribe` / `ingest` / `bridge-exec`。
 
 config.json 契约（与 agent 仓库严格对齐；`previously init` 只写最小默认值，大脑等运行时配置在内核 Web UI 设置页维护）：`brain?: { "type": "api-key", "env": string, "model"?: string } | { "type": "bridge", "agent": "claude"|"codex"|"kimi" }`（缺省 = 内核沿用环境变量里的 key）；`apiKeys?: Record<string, string>`（手动录入的 key，本地 MVP 明文存储）。`start` 拉起内核时追加注入：`PREVIOUSLY_HOME`、`apiKeys` 每个键值、bridge 大脑时的 `PREVIOUSLY_BRAIN=bridge` + `PREVIOUSLY_BRAIN_AGENT`、api-key 大脑时的 key 值与 `PREVIOUSLY_DEFAULT_MODEL`（契约预留，内核可暂不消费）。
 
-Current commands (batches C1 + C1.5 + C2 + C3 + C4 + C6 + C7): `（裸命令：初始化/状态面板）`, `init`, `start`, `stop`, `status`, `logs`, `open`, `kernel`, `upgrade`, `install`, `uninstall`, `watch`, `scribe`, `ingest`, `bridge-exec`, plus the constrained read commands for bridged agents (`recall`, `readslice`, `timeline`, `strands`, `card`, `slicesummary`, `agentlog`).
+Current commands (batches C1 + C1.5 + C2 + C3 + C4 + C6 + C7): `（裸命令：初始化/状态面板）`, `init`, `start`, `stop`, `status`, `logs`, `open`, `kernel`, `install`, `uninstall`, `watch`, `scribe`, `ingest`, `bridge-exec`, plus the constrained read commands for bridged agents (`readslice`, `timeline`, `strands`, `card`, `slicesummary`, `agentlog`).
 
-内核供应链（设计文档 §10）：`previously kernel install --repo <git-url> --ref <branch|tag|sha>` 从 agent 仓库浅克隆并构建 standalone 产物，安装到 `~/.previously/kernel/versions/<version>/`，原子切换 `kernel/current.json` 指针，可 `previously kernel rollback` 回滚。版本策略：client 内嵌内核 minor 版本线（package.json `previously.kernelLine`，当前 `0.8`），内核 major.minor 必须与版本线一致，patch 自由；`previously upgrade` 装版本线内最新 patch，跨 minor 拒绝并提示先升级 client。测试/逃逸通道：`previously kernel install --from <dir> --version <x.y.z>` 直接把本地 standalone 目录当作已构建产物安装。`start`/`status` 经指针解析内核目录并做兼容校验；config `kernelDir` 为显式覆盖。
+内核供应链（设计文档 §10）：`previously kernel install [--repo <git-url>]` 从 agent 仓库浅克隆钉死版本对应的 tag（`v<pinned>`）并构建 standalone 产物，安装到 `~/.previously/kernel/versions/<version>/`，原子切换 `kernel/current.json` 指针。版本策略：精确绑定——client 钉死一个确切内核版本（package.json `previously.kernelVersion`，当前 `0.9.0`），内核版本必须完全相等，patch 也不例外；升级 = 升级 client 包本身（不再有 `previously upgrade` / `kernel rollback`）。测试/逃逸通道：`previously kernel install --from <dir> --version <x.y.z>` 直接把本地 standalone 目录当作已构建产物安装。`start`/`status` 经指针解析内核目录并做兼容校验；config `kernelDir` 为显式覆盖。
 
 Repo builds require `git` and `pnpm` on PATH (shell-outs via `node:child_process`). Without any installed kernel, `start` falls back to a hand-placed standalone build in `~/.previously/kernel/` and fails with an actionable error if none exists.
 

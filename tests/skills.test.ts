@@ -279,4 +279,29 @@ describe('materializeBridgeWorkspace', () => {
       rmSync(ws.dir, { recursive: true, force: true });
     }
   });
+
+  it('payload skills are written as skills/<name>.md with placeholders filled', () => {
+    const ws = materializeBridgeWorkspace('claude', ROOT, undefined, {
+      skills: { recall: 'Run `{{PREVIOUSLY_CMD}} timeline` under {{MEMORY_ROOT}}.\n' },
+      previouslyCmd: '"node" "C:\\x\\cli.js"',
+    });
+    try {
+      const skill = readFileSync(join(ws.dir, 'skills', 'recall.md'), 'utf8');
+      expect(skill).toBe('Run `"node" "C:\\x\\cli.js" timeline` under ' + ROOT + '.\n');
+    } finally {
+      rmSync(ws.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('no skills option → no skills directory; invalid skill names are refused', () => {
+    const ws = materializeBridgeWorkspace('claude', ROOT);
+    try {
+      expect(existsSync(join(ws.dir, 'skills'))).toBe(false);
+    } finally {
+      rmSync(ws.dir, { recursive: true, force: true });
+    }
+    expect(() =>
+      materializeBridgeWorkspace('claude', ROOT, undefined, { skills: { '../evil': 'x' } }),
+    ).toThrow(/Invalid skill name/);
+  });
 });

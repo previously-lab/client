@@ -1,6 +1,7 @@
 import { loadConfig } from '../lib/config.js';
 import { listStrands, MemoryError, readStrand } from '../lib/memory.js';
 import { resolvePaths } from '../lib/paths.js';
+import { assertReaderAllowed } from '../lib/reader-scope.js';
 
 /**
  * `previously strands [name]` — the constrained strand reader for bridged
@@ -34,6 +35,13 @@ function usage(): string {
 }
 
 export async function run(args: string[]): Promise<number> {
+  // Phase scope gate (bridge outsourcing): refused before any arg parsing.
+  const denial = assertReaderAllowed('strands');
+  if (denial !== null) {
+    console.error(denial);
+    return 1;
+  }
+
   const [name, ...rest] = args;
   if (rest.length > 0 || (name !== undefined && name.startsWith('--'))) {
     console.error(usage());

@@ -1,4 +1,4 @@
-import { getKernelLine } from '../lib/version-policy.js';
+import { getPinnedKernelVersion } from '../lib/version-policy.js';
 import { collectStatus, nextStepSuggestion, type SystemStatus } from '../lib/system-status.js';
 import { resolvePaths } from '../lib/paths.js';
 import type { ScribeStatus } from '../scribe/status.js';
@@ -33,7 +33,7 @@ export async function run(args: string[]): Promise<number> {
   console.log(`Kernel:    ${s.kernelAlive ? `running (pid ${s.kernelPid})` : 'not running'}`);
   if (s.kernelVersion !== null) {
     console.log(
-      `Version:   ${s.kernelVersion} (line ${getKernelLine()}.x — ${s.compat!.ok ? 'compatible' : 'INCOMPATIBLE'}, source: ${s.kernelSource})`,
+      `Version:   ${s.kernelVersion} (pinned ${getPinnedKernelVersion()} — ${s.compat!.ok ? 'compatible' : 'INCOMPATIBLE'}, source: ${s.kernelSource})`,
     );
   } else {
     console.log(`Version:   unknown (no installed kernel pointer; dir: ${s.kernelDir})`);
