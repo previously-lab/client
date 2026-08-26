@@ -39,14 +39,15 @@ export function claudeUserLine(text: string, timestamp: string, sessionId: strin
 
 export type ClaudeBlock =
   | { kind: 'text'; text: string }
+  | { kind: 'thinking'; text: string }
   | { kind: 'tool_use'; name: string; input: unknown };
 
 export function claudeAssistantLine(blocks: ClaudeBlock[], timestamp: string, sessionId: string): string {
-  const content = blocks.map((block, i) =>
-    block.kind === 'text'
-      ? { type: 'text', text: block.text }
-      : { type: 'tool_use', id: `toolu_${i}`, name: block.name, input: block.input },
-  );
+  const content = blocks.map((block, i) => {
+    if (block.kind === 'text') return { type: 'text', text: block.text };
+    if (block.kind === 'thinking') return { type: 'thinking', thinking: block.text };
+    return { type: 'tool_use', id: `toolu_${i}`, name: block.name, input: block.input };
+  });
   return JSON.stringify({
     parentUuid: uuid(),
     isSidechain: false,
@@ -69,8 +70,13 @@ export function claudeAssistantLine(blocks: ClaudeBlock[], timestamp: string, se
   });
 }
 
-/** A tool-result user line (recognized, but not human speech → skipped). */
-export function claudeToolResultLine(output: string, timestamp: string, sessionId: string): string {
+/** A tool-result user line (pairs with a tool_use block via tool_use_id). */
+export function claudeToolResultLine(
+  output: string,
+  timestamp: string,
+  sessionId: string,
+  opts: { toolUseId?: string; isError?: boolean } = {},
+): string {
   return JSON.stringify({
     parentUuid: uuid(),
     isSidechain: false,
@@ -78,7 +84,14 @@ export function claudeToolResultLine(output: string, timestamp: string, sessionI
     type: 'user',
     message: {
       role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'toolu_0', content: output }],
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: opts.toolUseId ?? 'toolu_0',
+          content: output,
+          ...(opts.isError === true ? { is_error: true } : {}),
+        },
+      ],
     },
     uuid: uuid(),
     timestamp,
@@ -89,6 +102,13 @@ export function claudeToolResultLine(output: string, timestamp: string, sessionI
     cwd: 'C:\\Users\\Dream\\proj',
     version: '2.1.204',
   });
+}
+
+/** A sidechain (subagent) line — belongs to the subagent's own log, skipped. */
+export function claudeSidechainLine(text: string, timestamp: string, sessionId: string): string {
+  const parsed = JSON.parse(claudeUserLine(text, timestamp, sessionId)) as { isSidechain: boolean };
+  parsed.isSidechain = true;
+  return JSON.stringify(parsed);
 }
 
 /** Non-conversational Claude Code lines (skipped quietly). */
@@ -149,19 +169,28 @@ export function codexMessageLine(
   });
 }
 
-export function codexFunctionCallLine(name: string, args: string, timestamp: string): string {
+export function codexFunctionCallLine(name: string, args: string, timestamp: string, callId?: string): string {
   return JSON.stringify({
     timestamp,
     type: 'response_item',
-    payload: { type: 'function_call', name, arguments: args, call_id: `call_${uuid()}` },
+    payload: { type: 'function_call', name, arguments: args, call_id: callId ?? `call_${uuid()}` },
   });
 }
 
-export function codexFunctionCallOutputLine(output: string, timestamp: string): string {
+export function codexFunctionCallOutputLine(output: string, timestamp: string, callId?: string): string {
   return JSON.stringify({
     timestamp,
     type: 'response_item',
-    payload: { type: 'function_call_output', call_id: `call_${uuid()}`, output },
+    payload: { type: 'function_call_output', call_id: callId ?? `call_${uuid()}`, output },
+  });
+}
+
+/** Reasoning summary → thinking event. */
+export function codexReasoningLine(text: string, timestamp: string): string {
+  return JSON.stringify({
+    timestamp,
+    type: 'response_item',
+    payload: { type: 'reasoning', summary: [{ type: 'summary_text', text }] },
   });
 }
 
@@ -234,7 +263,7 @@ export function kimiWireAgentTextLine(text: string, timeMs: number): string {
   });
 }
 
-/** Agent thinking part (skipped — not user-visible speech). */
+/** Agent thinking part (reasoning — the text lives in the `think` field). */
 export function kimiWireThinkLine(text: string, timeMs: number): string {
   return JSON.stringify({
     type: 'context.append_loop_event',
@@ -251,7 +280,7 @@ export function kimiWireThinkLine(text: string, timeMs: number): string {
 }
 
 /** Agent tool invocation. */
-export function kimiWireToolCallLine(name: string, args: unknown, timeMs: number): string {
+export function kimiWireToolCallLine(name: string, args: unknown, timeMs: number, toolCallId?: string): string {
   return JSON.stringify({
     type: 'context.append_loop_event',
     event: {
@@ -260,9 +289,28 @@ export function kimiWireToolCallLine(name: string, args: unknown, timeMs: number
       turnId: '0',
       step: 1,
       stepUuid: uuid(),
-      toolCallId: `tool_${uuid().slice(0, 8)}`,
+      toolCallId: toolCallId ?? `tool_${uuid().slice(0, 8)}`,
       name,
       args,
+    },
+    time: timeMs,
+  });
+}
+
+/** Agent tool result, paired with a tool.call via toolCallId. */
+export function kimiWireToolResultLine(
+  output: string,
+  isError: boolean,
+  timeMs: number,
+  toolCallId?: string,
+): string {
+  return JSON.stringify({
+    type: 'context.append_loop_event',
+    event: {
+      type: 'tool.result',
+      parentUuid: uuid(),
+      toolCallId: toolCallId ?? `tool_${uuid().slice(0, 8)}`,
+      result: { output, ...(isError ? { isError: true } : {}) },
     },
     time: timeMs,
   });
@@ -295,16 +343,6 @@ export function kimiWireMetaLines(userText: string, timeMs: number): string[] {
     JSON.stringify({
       type: 'context.append_loop_event',
       event: { type: 'step.begin', uuid: uuid(), turnId: '0', step: 1 },
-      time: timeMs,
-    }),
-    JSON.stringify({
-      type: 'context.append_loop_event',
-      event: {
-        type: 'tool.result',
-        parentUuid: uuid(),
-        toolCallId: `tool_${uuid().slice(0, 8)}`,
-        result: { output: 'ok' },
-      },
       time: timeMs,
     }),
     JSON.stringify({ type: 'turn.ended', turnId: '0', time: timeMs }),

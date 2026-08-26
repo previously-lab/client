@@ -1,7 +1,9 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  assembleExchanges,
+  renderAgentMarkdown,
   renderSliceMarkdown,
   resolveSliceId,
   sliceIdFromTimestamp,
@@ -9,7 +11,7 @@ import {
   upsertMonthlyIndex,
   writeSessionSlice,
 } from '../src/scribe/slicer.js';
-import type { SessionState } from '../src/scribe/types.js';
+import type { SessionState, TranscriptEvent } from '../src/scribe/types.js';
 import { cleanupTempHome, useTempHome } from './helpers.js';
 
 function makeSession(overrides: Partial<SessionState> = {}): SessionState {
@@ -18,9 +20,22 @@ function makeSession(overrides: Partial<SessionState> = {}): SessionState {
     sessionId: 'sess-1',
     sliceId: '2026-08-10-1401',
     events: [
-      { timestamp: '2026-08-10T14:01:00.000Z', role: 'user', text: '帮我整理项目结构' },
-      { timestamp: '2026-08-10T14:01:05.000Z', role: 'agent', text: '好的，我先看一下。' },
-      { timestamp: '2026-08-10T14:01:05.000Z', role: 'agent', toolName: 'Bash', text: 'ls -la' },
+      { timestamp: '2026-08-10T14:01:00.000Z', kind: 'user', text: '帮我整理项目结构' },
+      { timestamp: '2026-08-10T14:01:05.000Z', kind: 'agent-text', text: '好的，我先看一下。' },
+      {
+        timestamp: '2026-08-10T14:01:05.000Z',
+        kind: 'tool-call',
+        toolName: 'Bash',
+        text: 'ls -la',
+        toolCallId: 'toolu_0',
+      },
+      {
+        timestamp: '2026-08-10T14:01:06.000Z',
+        kind: 'tool-result',
+        toolCallId: 'toolu_0',
+        text: 'src tests',
+        isError: false,
+      },
     ],
     appendix: [],
     parseErrors: 0,
@@ -53,13 +68,127 @@ describe('renderSliceMarkdown', () => {
     expect(lines).toContain('open_loops: []');
     expect(lines).toContain('loops: []');
     expect(md).toMatch(/## Turn [A-Za-z0-9_-]{6} — 2026-08-10T14:01:00\.000Z \(user\)\n\n帮我整理项目结构/);
-    expect(md).toContain('**Tool: Bash**\n\nls -la');
+    // One exchange = one user Turn + one agent Turn sharing the turn id;
+    // tool chatter lives in agent.md, not as `**Tool:**` pseudo-turns.
+    const turns = [...md.matchAll(/^## Turn (\S+) — .* \((user|agent)\)$/gm)];
+    expect(turns.map((m) => m[2])).toEqual(['user', 'agent']);
+    expect(turns[0]![1]).toBe(turns[1]![1]);
+    expect(md).not.toContain('**Tool:**');
   });
 
   it('is deterministic: same events → same bytes (content-hash dedup)', () => {
     const a = renderSliceMarkdown(makeSession(), '2026-08-10-1401', 'Asia/Shanghai');
     const b = renderSliceMarkdown(makeSession(), '2026-08-10-1401', 'Asia/Shanghai');
     expect(a).toBe(b);
+  });
+});
+
+describe('assembleExchanges', () => {
+  it('groups events by user-message boundaries', () => {
+    const exchanges = assembleExchanges(makeSession().events);
+    expect(exchanges).toHaveLength(1);
+    expect(exchanges[0]!.user!.kind).toBe('user');
+    expect(exchanges[0]!.agentEvents.map((e) => e.kind)).toEqual(['agent-text', 'tool-call', 'tool-result']);
+  });
+
+  it('puts agent events before the first user message into a user-less leading exchange', () => {
+    const events: TranscriptEvent[] = [
+      { timestamp: '2026-08-10T14:00:00.000Z', kind: 'agent-text', text: '续上次的进度…' },
+      { timestamp: '2026-08-10T14:01:00.000Z', kind: 'user', text: '继续' },
+      { timestamp: '2026-08-10T14:01:05.000Z', kind: 'agent-text', text: '好。' },
+    ];
+    const exchanges = assembleExchanges(events);
+    expect(exchanges).toHaveLength(2);
+    expect(exchanges[0]!.user).toBeNull();
+    expect(exchanges[0]!.agentEvents).toHaveLength(1);
+    expect(exchanges[1]!.user!.text).toBe('继续');
+    // The leading exchange still renders as an agent Turn in core.md.
+    const md = renderSliceMarkdown(makeSession({ events }), '2026-08-10-1401', 'Asia/Shanghai');
+    expect(md).toContain('续上次的进度…');
+    const turns = [...md.matchAll(/^## Turn \S+ — .* \((user|agent)\)$/gm)];
+    expect(turns.map((m) => m[1])).toEqual(['agent', 'user', 'agent']);
+  });
+});
+
+describe('renderAgentMarkdown', () => {
+  it('renders one Cognition block per exchange, pairing tool calls with results', () => {
+    const session = makeSession({
+      events: [
+        { timestamp: '2026-08-10T14:01:00.000Z', kind: 'user', text: '第一问' },
+        { timestamp: '2026-08-10T14:01:05.000Z', kind: 'thinking', text: '先想想第一问。' },
+        {
+          timestamp: '2026-08-10T14:01:06.000Z',
+          kind: 'tool-call',
+          toolName: 'Bash',
+          text: 'ls',
+          toolCallId: 'c1',
+        },
+        {
+          timestamp: '2026-08-10T14:01:07.000Z',
+          kind: 'tool-result',
+          toolCallId: 'c1',
+          text: 'ok output',
+          isError: false,
+        },
+        { timestamp: '2026-08-10T14:01:09.000Z', kind: 'agent-text', text: '第一答' },
+        { timestamp: '2026-08-10T14:02:00.000Z', kind: 'user', text: '第二问' },
+        {
+          timestamp: '2026-08-10T14:02:05.000Z',
+          kind: 'tool-call',
+          toolName: 'Read',
+          text: 'a.ts',
+          toolCallId: 'c2',
+        },
+        {
+          timestamp: '2026-08-10T14:02:06.000Z',
+          kind: 'tool-result',
+          toolCallId: 'c2',
+          text: 'ENOENT: no such file',
+          isError: true,
+        },
+        { timestamp: '2026-08-10T14:02:09.000Z', kind: 'agent-text', text: '第二答' },
+      ],
+    });
+
+    const core = renderSliceMarkdown(session, '2026-08-10-1401', 'Asia/Shanghai');
+    const coreTurnIds = [...core.matchAll(/^## Turn (\S+) — .* \(user\)$/gm)].map((m) => m[1]);
+    expect(coreTurnIds).toHaveLength(2);
+    expect((core.match(/^## Turn /gm) ?? []).length).toBe(4);
+
+    const agent = renderAgentMarkdown(session);
+    expect(agent).not.toBeNull();
+    const cognitions = [...agent!.matchAll(/^## Cognition (\S+) — (.+)$/gm)];
+    expect(cognitions.map((m) => m[1])).toEqual(coreTurnIds);
+    expect(agent).toContain('### Thinking\n\n先想想第一问。');
+    expect(agent).toContain('- `Bash`(ls) → ok');
+    expect(agent).toContain('- `Read`(a.ts) → error: ENOENT: no such file');
+  });
+
+  it('renders unpaired results (task notifications) as standalone tool lines', () => {
+    const session = makeSession({
+      events: [
+        { timestamp: '2026-08-10T14:01:00.000Z', kind: 'user', text: '干活' },
+        {
+          timestamp: '2026-08-10T14:05:00.000Z',
+          kind: 'tool-result',
+          toolName: 'task',
+          text: '子代理完成了代码搜索',
+          isError: false,
+        },
+      ],
+    });
+    const agent = renderAgentMarkdown(session);
+    expect(agent).toContain('- `task` → ok: 子代理完成了代码搜索');
+  });
+
+  it('returns null when the session produced no cognition', () => {
+    const session = makeSession({
+      events: [
+        { timestamp: '2026-08-10T14:01:00.000Z', kind: 'user', text: '你好' },
+        { timestamp: '2026-08-10T14:01:05.000Z', kind: 'agent-text', text: '你好！' },
+      ],
+    });
+    expect(renderAgentMarkdown(session)).toBeNull();
   });
 });
 
@@ -81,6 +210,33 @@ describe('writeSessionSlice', () => {
     );
     expect(existsSync(join(result.sliceDir, 'core.md'))).toBe(true);
     expect(result.coreChanged).toBe(true);
+  });
+
+  it('writes agent.md with the cognition record when the session has any', () => {
+    setup();
+    const result = writeSessionSlice(memory, makeSession(), 'Asia/Shanghai');
+    const agent = readFileSync(join(result.sliceDir, 'agent.md'), 'utf8');
+    expect(agent).toMatch(/^## Cognition [A-Za-z0-9_-]{6} — 2026-08-10T14:01:05\.000Z/m);
+    expect(agent).toContain('### Tools');
+    expect(agent).toContain('- `Bash`(ls -la) → ok');
+  });
+
+  it('omits agent.md when there is no cognition, and removes a stale one', () => {
+    setup();
+    const session = makeSession({
+      events: [
+        { timestamp: '2026-08-10T14:01:00.000Z', kind: 'user', text: '你好' },
+        { timestamp: '2026-08-10T14:01:05.000Z', kind: 'agent-text', text: '你好！' },
+      ],
+    });
+    const result = writeSessionSlice(memory, session, 'Asia/Shanghai');
+    const agentPath = join(result.sliceDir, 'agent.md');
+    expect(existsSync(agentPath)).toBe(false);
+
+    // A stale agent.md from an earlier parser version must not linger.
+    writeFileSync(agentPath, '## Cognition stale — old\n', 'utf8');
+    writeSessionSlice(memory, session, 'Asia/Shanghai');
+    expect(existsSync(agentPath)).toBe(false);
   });
 
   it('re-writing identical events is byte-identical and skipped', () => {

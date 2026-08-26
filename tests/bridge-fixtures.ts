@@ -141,6 +141,24 @@ export const FIXTURE_HANG = RECORDING_PREAMBLE + `function main() {
 }
 `;
 
+/**
+ * Build a fixture claude-shape CLI script whose success result event carries
+ * `reply` verbatim (marking JSON, card documents, …). When FIXTURE_MARKER is
+ * set in the environment the fixture writes a marker file on invocation, so
+ * tests can prove a dispatch did (or did not) happen.
+ */
+export function replyFixtureScript(reply: string): string {
+  return RECORDING_PREAMBLE + `function main() {
+  if (process.env.FIXTURE_MARKER) fs.writeFileSync(process.env.FIXTURE_MARKER, 'called', 'utf8');
+  const lines = [
+    JSON.stringify({ type: 'system', subtype: 'init', session_id: 'fixture-reply' }),
+    JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: ${JSON.stringify(reply)}, num_turns: 1 }),
+  ];
+  process.stdout.write(lines.join('\\n') + '\\n');
+}
+`;
+}
+
 export interface FixtureClis {
   claude: string;
   claudeError: string;

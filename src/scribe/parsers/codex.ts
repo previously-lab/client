@@ -8,17 +8,26 @@ import type { ParseOutcome, TranscriptEvent } from '../types.js';
  * Conversational payloads:
  *   {"type":"message","role":"user","content":[{"type":"input_text","text":...}]}
  *   {"type":"message","role":"assistant","content":[{"type":"output_text","text":...}]}
+ *   {"type":"reasoning","summary":[{"type":"summary_text","text":...}]}
  *   {"type":"function_call","name":"shell","arguments":"{...}","call_id":"..."}
+ *   {"type":"function_call_output","call_id":"...","output":"..."}
  *   {"type":"custom_tool_call","name":"...","input":"...","call_id":"..."}
+ *   {"type":"custom_tool_call_output","call_id":"...","output":"..."}
  *   {"type":"local_shell_call","action":{"type":"exec","command":[...]}}
- * `session_meta` carries the session id (`payload.id`); `turn_context`,
- * `event_msg`, `reasoning`, `function_call_output`, and unknown future types
- * are skipped quietly.
+ * `session_meta` carries the session id (`payload.id`); `turn_context`
+ * (per-turn model/cwd), `compacted` (context-compaction boundary),
+ * `event_msg`, and unknown future types are skipped quietly. Calls pair with
+ * outputs via `call_id`.
+ *
+ * Format cross-checked against the openai/codex source (codex-rs history /
+ * rollout / protocol crates, 2026-08): the envelope and payload shapes above
+ * are source-confirmed. Still ASSUMED overall — no real rollout file has been
+ * parsed on the dev machine; fixture tests carry the weight.
  *
  * Bump PARSER_VERSION when the mapping changes; cursors record it and a
  * mismatch forces a full re-read of the file.
  */
-export const CODEX_PARSER_VERSION = 1;
+export const CODEX_PARSER_VERSION = 2;
 
 const SKIP: ParseOutcome = { events: [], appendix: [] };
 
@@ -85,21 +94,45 @@ export function parseCodexLine(line: string): ParseOutcome {
       // Conversational content we cannot place in time — format drift.
       return { events: [], appendix: [line] };
     }
-    events.push({ timestamp, role, text });
+    events.push({ timestamp, kind: role === 'user' ? 'user' : 'agent-text', text });
+    return { events, appendix: [] };
+  }
+
+  if (payload.type === 'reasoning') {
+    if (timestamp === undefined) return SKIP; // reasoning without a time is skippable noise
+    const summary = Array.isArray(payload.summary) ? payload.summary : [];
+    const texts = summary
+      .filter((s): s is Record<string, unknown> => isRecord(s))
+      .map((s) => (typeof s.text === 'string' ? s.text : ''))
+      .filter((t) => t.trim().length > 0);
+    if (texts.length === 0) return SKIP;
+    events.push({ timestamp, kind: 'thinking', text: texts.join('\n\n') });
     return { events, appendix: [] };
   }
 
   if (payload.type === 'function_call' && typeof payload.name === 'string') {
     if (timestamp === undefined) return { events: [], appendix: [line] };
     const args = typeof payload.arguments === 'string' ? payload.arguments : '';
-    events.push({ timestamp, role: 'agent', toolName: payload.name, text: truncate(args) });
+    events.push({
+      timestamp,
+      kind: 'tool-call',
+      toolName: payload.name,
+      text: truncate(args),
+      ...(typeof payload.call_id === 'string' ? { toolCallId: payload.call_id } : {}),
+    });
     return { events, appendix: [] };
   }
 
   if (payload.type === 'custom_tool_call' && typeof payload.name === 'string') {
     if (timestamp === undefined) return { events: [], appendix: [line] };
     const input = typeof payload.input === 'string' ? payload.input : '';
-    events.push({ timestamp, role: 'agent', toolName: payload.name, text: truncate(input) });
+    events.push({
+      timestamp,
+      kind: 'tool-call',
+      toolName: payload.name,
+      text: truncate(input),
+      ...(typeof payload.call_id === 'string' ? { toolCallId: payload.call_id } : {}),
+    });
     return { events, appendix: [] };
   }
 
@@ -108,10 +141,29 @@ export function parseCodexLine(line: string): ParseOutcome {
     const command = Array.isArray(payload.action.command)
       ? payload.action.command.filter((p): p is string => typeof p === 'string').join(' ')
       : '';
-    events.push({ timestamp, role: 'agent', toolName: 'shell', text: truncate(command) });
+    events.push({
+      timestamp,
+      kind: 'tool-call',
+      toolName: 'shell',
+      text: truncate(command),
+      ...(typeof payload.call_id === 'string' ? { toolCallId: payload.call_id } : {}),
+    });
     return { events, appendix: [] };
   }
 
-  // reasoning, function_call_output, web_search_call, unknown payloads: skip.
+  if (payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output') {
+    if (timestamp === undefined) return SKIP;
+    const output = typeof payload.output === 'string' ? payload.output : JSON.stringify(payload.output ?? '');
+    events.push({
+      timestamp,
+      kind: 'tool-result',
+      ...(typeof payload.call_id === 'string' ? { toolCallId: payload.call_id } : {}),
+      text: truncate(output, 300),
+      isError: false,
+    });
+    return { events, appendix: [] };
+  }
+
+  // web_search_call, unknown payloads: skip.
   return SKIP;
 }

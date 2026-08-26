@@ -28,7 +28,7 @@ import type { ParseOutcome, TranscriptEvent } from '../types.js';
  * Bump PARSER_VERSION when the mapping changes; cursors record it and a
  * mismatch forces a full re-read of the file.
  */
-export const GEMINI_PARSER_VERSION = 1;
+export const GEMINI_PARSER_VERSION = 2;
 
 const DOC_PREVIEW_MAX = 4000;
 
@@ -101,7 +101,7 @@ export function parseGeminiDoc(doc: string): ParseOutcome {
       continue;
     }
 
-    if (text.trim().length > 0) events.push({ timestamp, role, text });
+    if (text.trim().length > 0) events.push({ timestamp, kind: role === 'user' ? 'user' : 'agent-text', text });
     for (const call of toolCalls) {
       if (typeof call.name !== 'string') continue;
       let argsSummary: string;
@@ -110,7 +110,7 @@ export function parseGeminiDoc(doc: string): ParseOutcome {
       } catch {
         argsSummary = `(${call.name} args not serializable)`;
       }
-      events.push({ timestamp, role: 'agent', toolName: call.name, text: argsSummary });
+      events.push({ timestamp, kind: 'tool-call', toolName: call.name, text: argsSummary });
     }
   }
 

@@ -33,13 +33,12 @@ describe('buildKernelEnv (start env contract)', () => {
     expect(env.PREVIOUSLY_DEFAULT_MODEL).toBeUndefined();
   });
 
-  it('always injects PREVIOUSLY_BRIDGE_CMD as a fully-qualified node command', () => {
+  it('injects PREVIOUSLY_BRIDGE_CMD as the registered command name', () => {
+    // The client is an installed application: the kernel and bridged agents
+    // invoke it the same way the user does — never an absolute path into a
+    // checkout's build output.
     const cmd = buildKernelEnv(config(), paths, {}).PREVIOUSLY_BRIDGE_CMD;
-    // Absolute, PATH-independent, quote-wrapped (paths may contain spaces):
-    // "<node>" "<…/cli.js" bridge-exec — the cli.js segment differs between
-    // src (vitest) and dist (runtime), so assert the shape, not the prefix.
-    expect(cmd?.startsWith(`"${process.execPath}" "`)).toBe(true);
-    expect(cmd?.endsWith('cli.js" bridge-exec')).toBe(true);
+    expect(cmd).toBe('previously bridge-exec');
   });
 
   it('injects every config.apiKeys entry', () => {

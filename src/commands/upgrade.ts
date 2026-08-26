@@ -8,6 +8,7 @@ import {
   type InstallResult,
 } from '../lib/kernel.js';
 import { resolvePaths } from '../lib/paths.js';
+import { isProcessAlive, readPidFile } from '../lib/process.js';
 import {
   formatSemver,
   getKernelLine,
@@ -77,6 +78,12 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<numbe
         console.log(`Kernel ${pointer.version} installed and active (${pointer.dir}).`);
         if (pointer.previous) {
           console.log(`Previous version ${pointer.previous.version} kept — \`previously kernel rollback\` switches back.`);
+        }
+        // The pointer flipped, but a running kernel keeps serving the OLD
+        // version until restarted — say so honestly.
+        const pid = readPidFile(resolvePaths().pidPath);
+        if (pid !== null && isProcessAlive(pid)) {
+          console.log(`Note: the kernel is running (pid ${pid}) and still serving the old version — restart with \`previously stop && previously start\` to apply ${pointer.version}.`);
         }
         return 0;
       } catch (err) {

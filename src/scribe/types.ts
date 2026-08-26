@@ -7,17 +7,24 @@ export type ScribeSource = 'claude-code' | 'codex' | 'kimi-code' | 'gemini';
 
 export const SCRIBE_SOURCES: readonly ScribeSource[] = ['claude-code', 'codex', 'kimi-code', 'gemini'];
 
-/** A normalized conversational event extracted from any agent's log line. */
-export interface TranscriptEvent {
-  /** UTC ISO 8601 timestamp, taken from the source log line. */
-  timestamp: string;
-  /** Kernel turn vocabulary: human input is "user", model output is "agent". */
-  role: 'user' | 'agent';
-  /** Message text; for tool calls a truncated input summary. */
-  text: string;
-  /** Set when this event is a tool invocation by the agent. */
-  toolName?: string;
-}
+/**
+ * A normalized conversational event extracted from any agent's log line.
+ *
+ * The model is exchange-oriented: parsers emit a flat stream, the slicer
+ * assembles it into turns (one user question + everything the agent did
+ * until the next user message = one turn) and splits presentation
+ * (core.md: user/agent speech) from process (agent.md: thinking + tools),
+ * mirroring the kernel's slice structure.
+ */
+export type TranscriptEvent =
+  | { timestamp: string; kind: 'user'; text: string }
+  | { timestamp: string; kind: 'agent-text'; text: string }
+  /** Model reasoning (claude thinking blocks, kimi think parts). */
+  | { timestamp: string; kind: 'thinking'; text: string }
+  /** text = truncated input summary; toolCallId pairs with the result. */
+  | { timestamp: string; kind: 'tool-call'; toolName: string; text: string; toolCallId?: string }
+  /** text = truncated output excerpt; toolCallId pairs with the call. */
+  | { timestamp: string; kind: 'tool-result'; toolName?: string; toolCallId?: string; text: string; isError: boolean };
 
 /**
  * Result of parsing one raw log line.

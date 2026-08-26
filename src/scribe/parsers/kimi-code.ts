@@ -3,27 +3,30 @@ import type { ParseOutcome, TranscriptEvent } from '../types.js';
 /**
  * Kimi Code wire parser (`~/.kimi-code/sessions/<workDirKey>/<sessionId>/agents/<agent>/wire.jsonl`).
  *
- * VERIFIED against 82 real wire.jsonl files on the dev machine (protocol
+ * VERIFIED against real wire.jsonl files on the dev machine (protocol
  * version 1.5). Each line is a JSON event with an epoch-ms `time` field.
  * Conversational events:
  *   {"type":"context.append_message",
  *    "message":{"role":"user","content":[{"type":"text","text":...}]},
  *    "time":1787131307922}
  *   {"type":"context.append_loop_event","event":{"type":"content.part",
- *    "part":{"type":"text","text":...}},"time":...}        (agent speech)
+ *    "part":{"type":"text"|"think","text"|"think":...}},"time":...}
  *   {"type":"context.append_loop_event","event":{"type":"tool.call",
- *    "name":"Bash","args":{...}},"time":...}               (agent tool call)
+ *    "toolCallId":"tool_…","name":"Bash","args":{...}},"time":...}
+ *   {"type":"context.append_loop_event","event":{"type":"tool.result",
+ *    "toolCallId":"tool_…","result":{"output":...,"isError":...}},"time":...}
  * Verified across all sampled files: `append_message` only ever carries
- * role "user" (content blocks `text`, rarely `image_url`); assistant output
- * only ever appears as `content.part` parts of type `text`/`think`.
+ * role "user"; assistant output only ever appears as `content.part` parts
+ * of type `text` (speech) / `think` (reasoning — the text lives in the
+ * `think` field, NOT `text`). tool.call/tool.result pair via `toolCallId`.
  * `turn.prompt` duplicates the same user text that `append_message` already
  * carries (verified 16/16 overlap in a sampled session) — skipped to avoid
  * double transcription.
  * Harness noise (`metadata`, `profile.bind`, `permission.set_mode`,
  * `config.update`, `llm.request`, `llm.tools_snapshot`, `usage.record`,
  * `tools.update_store`, `turn.ended`, `turn.cancel`, `interaction.*`,
- * `interruptionReminder.recorded`, `step.begin/end`, `tool.result`,
- * `content.part` think parts) is skipped quietly.
+ * `step.begin/end`, compaction events) is skipped quietly — turn assembly
+ * keys off user-message boundaries instead of turn.ended.
  *
  * The wire format carries no session id in-band; the engine derives it from
  * the file path via `kimiSessionIdFromPath`.
@@ -31,7 +34,7 @@ import type { ParseOutcome, TranscriptEvent } from '../types.js';
  * Bump PARSER_VERSION when the mapping changes; cursors record it and a
  * mismatch forces a full re-read of the file.
  */
-export const KIMI_CODE_PARSER_VERSION = 1;
+export const KIMI_CODE_PARSER_VERSION = 2;
 
 const SKIP: ParseOutcome = { events: [], appendix: [] };
 
@@ -90,6 +93,10 @@ export function kimiSessionIdFromPath(filePath: string): string | undefined {
   return match ? `${match[1]}/${match[2]}` : undefined;
 }
 
+function toolCallIdOf(event: Record<string, unknown>): string | undefined {
+  return typeof event.toolCallId === 'string' ? event.toolCallId : undefined;
+}
+
 export function parseKimiCodeLine(line: string): ParseOutcome {
   let rec: unknown;
   try {
@@ -102,13 +109,13 @@ export function parseKimiCodeLine(line: string): ParseOutcome {
   if (rec.type === 'context.append_message') {
     const message = rec.message;
     if (!isRecord(message)) return { events: [], appendix: [line] };
-    const role = message.role === 'user' ? 'user' : message.role === 'assistant' ? 'agent' : null;
+    const role = message.role === 'user' ? 'user' : null;
     if (role === null) return SKIP;
     const text = contentText(message.content);
     if (text.trim().length === 0) return SKIP; // e.g. image-only messages
     const timestamp = toIso(rec.time);
     if (timestamp === null) return { events: [], appendix: [line] };
-    return { events: [{ timestamp, role, text }], appendix: [] };
+    return { events: [{ timestamp, kind: 'user', text }], appendix: [] };
   }
 
   if (rec.type === 'context.append_loop_event') {
@@ -117,32 +124,59 @@ export function parseKimiCodeLine(line: string): ParseOutcome {
 
     if (event.type === 'content.part') {
       const part = event.part;
-      if (!isRecord(part) || part.type !== 'text') return SKIP; // think parts etc.
-      if (typeof part.text !== 'string' || part.text.trim().length === 0) return SKIP;
+      if (!isRecord(part)) return SKIP;
       const timestamp = toIso(rec.time);
-      if (timestamp === null) return { events: [], appendix: [line] };
-      const out: TranscriptEvent = { timestamp, role: 'agent', text: part.text };
-      return { events: [out], appendix: [] };
+      if (part.type === 'text' && typeof part.text === 'string' && part.text.trim().length > 0) {
+        if (timestamp === null) return { events: [], appendix: [line] };
+        return { events: [{ timestamp, kind: 'agent-text', text: part.text }], appendix: [] };
+      }
+      if (part.type === 'think' && typeof part.think === 'string' && part.think.trim().length > 0) {
+        if (timestamp === null) return { events: [], appendix: [line] };
+        return { events: [{ timestamp, kind: 'thinking', text: part.think }], appendix: [] };
+      }
+      return SKIP;
     }
 
     if (event.type === 'tool.call') {
       if (typeof event.name !== 'string') return SKIP;
       const timestamp = toIso(rec.time);
       if (timestamp === null) return { events: [], appendix: [line] };
+      const toolCallId = toolCallIdOf(event);
       return {
         events: [
           {
             timestamp,
-            role: 'agent',
+            kind: 'tool-call',
             toolName: event.name,
             text: summarizeToolArgs(event.name, event.args),
+            ...(toolCallId !== undefined ? { toolCallId } : {}),
           },
         ],
         appendix: [],
       };
     }
 
-    // step.begin, step.end, tool.result, unknown loop events: skip quietly.
+    if (event.type === 'tool.result') {
+      const timestamp = toIso(rec.time);
+      if (timestamp === null) return { events: [], appendix: [line] };
+      const result = isRecord(event.result) ? event.result : {};
+      const output = typeof result.output === 'string' ? result.output : '';
+      const toolCallId = toolCallIdOf(event);
+      return {
+        events: [
+          {
+            timestamp,
+            kind: 'tool-result',
+            ...(toolCallId !== undefined ? { toolCallId } : {}),
+            text: truncate(output, 300),
+            isError: result.isError === true,
+          },
+        ],
+        appendix: [],
+      };
+    }
+
+    // step.begin, step.end, turn.ended, unknown loop events: skip quietly.
     return SKIP;
   }
 

@@ -71,6 +71,11 @@ const PARSERS: Record<ScribeSource, ParserEntry> = {
   },
 };
 
+/** The per-source file matcher (which files under a root belong to it). */
+export function sourceFileMatcher(source: ScribeSource): (filePath: string) => boolean {
+  return PARSERS[source].matches;
+}
+
 /** Default watch roots under the user's home (Windows and macOS alike). */
 export function resolveScribeRoots(homeDir: string = homedir()): ScribeRoots {
   return {
@@ -102,7 +107,8 @@ function sanitizeFilePart(value: string): string {
 }
 
 interface PersistedSessionState extends SessionState {
-  _schema: 1;
+  /** Schema 2 = exchange-oriented event kinds (thinking/tool-call/tool-result). */
+  _schema: 2;
   filePath: string;
 }
 
@@ -182,7 +188,7 @@ export class ScribeEngine {
     const path = this.sessionStatePath(filePath, source);
     if (!existsSync(path)) return null;
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as PersistedSessionState;
-    if (parsed._schema !== 1 || parsed.filePath !== filePath) return null;
+    if (parsed._schema !== 2 || parsed.filePath !== filePath) return null;
     return {
       source: parsed.source,
       sessionId: parsed.sessionId,
@@ -194,7 +200,7 @@ export class ScribeEngine {
   }
 
   private saveSessionState(filePath: string, state: SessionState): void {
-    const persisted: PersistedSessionState = { _schema: 1, filePath, ...state };
+    const persisted: PersistedSessionState = { _schema: 2, filePath, ...state };
     writeFileAtomic(
       this.sessionStatePath(filePath, state.source),
       JSON.stringify(persisted) + '\n',

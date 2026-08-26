@@ -19,11 +19,11 @@ describe('status next-step suggestion', () => {
     expect(nextStepSuggestion(s)).toContain('previously init');
   });
 
-  it('suggests `previously` when initialized but the kernel is down', async () => {
+  it('suggests `previously start` when initialized but the kernel is down', async () => {
     home = useTempHome();
     writeConfigWithPort(await getFreePort());
     const s = await collectStatus(resolvePaths());
-    expect(nextStepSuggestion(s)).toBe('run `previously` to start');
+    expect(nextStepSuggestion(s)).toBe('run `previously start` to start the kernel');
   });
 
   it('suggests a restart when the kernel runs but the scribe is dead', async () => {
@@ -42,6 +42,6 @@ describe('status next-step suggestion', () => {
     vi.spyOn(console, 'log').mockImplementation((m) => stdout.push(String(m)));
     expect(await status([])).toBe(1);
     const nextLine = stdout.find((l) => l.startsWith('Next:'));
-    expect(nextLine).toContain('run `previously` to start');
+    expect(nextLine).toContain('run `previously start` to start the kernel');
   });
 });

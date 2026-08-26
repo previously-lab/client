@@ -1,17 +1,5 @@
-import { fileURLToPath } from 'node:url';
 import type { PreviouslyConfig } from './config.js';
 import type { PreviouslyPaths } from './paths.js';
-
-/**
- * Absolute path to this CLI's entrypoint (dist/cli.js at runtime). The bridge
- * channel between kernel and client is exactly one contract —
- * PREVIOUSLY_BRIDGE_CMD — injected at spawn time as a fully-qualified
- * `node <cli.js> bridge-exec` command: no PATH lookup, no shell-level env
- * vars, and invoking the actual agent CLIs stays the client's job
- * (bridge-exec). If the kernel cannot spawn it, it reports honestly and the
- * user configures manually — no guessing on either side.
- */
-const CLI_ENTRY = fileURLToPath(new URL('../cli.js', import.meta.url));
 
 /**
  * The env contract between client and kernel (mirrored by the agent repo —
@@ -22,6 +10,12 @@ const CLI_ENTRY = fileURLToPath(new URL('../cli.js', import.meta.url));
  * Only ever appends to the established keys (PREVIOUSLY_MODE / STORAGE /
  * MEMORY_ROOT / WORKFLOW_TARGET_WORLD / PORT / HOSTNAME) plus
  * PREVIOUSLY_HOME and PREVIOUSLY_BRIDGE_CMD; those are unchanged.
+ *
+ * PREVIOUSLY_BRIDGE_CMD is the REGISTERED command name, never an absolute
+ * path into this checkout's build output: the client is an installed
+ * application, and both the kernel and any bridged agent must invoke it the
+ * same way the user does — `previously …`. This matches the kernel's own
+ * default; the key is set explicitly only to document the contract.
  */
 export function buildKernelEnv(
   config: PreviouslyConfig,
@@ -36,9 +30,7 @@ export function buildKernelEnv(
     WORKFLOW_TARGET_WORLD: 'local',
     PORT: String(config.port),
     HOSTNAME: config.hostname,
-    // Quoted segments — the kernel's splitBridgeCommand honors double quotes,
-    // and both paths may contain spaces (e.g. "C:\Program Files\nodejs").
-    PREVIOUSLY_BRIDGE_CMD: `"${process.execPath}" "${CLI_ENTRY}" bridge-exec`,
+    PREVIOUSLY_BRIDGE_CMD: 'previously bridge-exec',
   };
 
   // Manually-provided API keys from config (plaintext local MVP, see config.ts).

@@ -14,6 +14,7 @@ import {
   type ExecFn,
 } from '../src/lib/kernel.js';
 import { resolvePaths } from '../src/lib/paths.js';
+import { removePidFile, writePidFile } from '../src/lib/process.js';
 import {
   cleanupTempHome,
   getFreePort,
@@ -340,5 +341,25 @@ describe('previously upgrade', () => {
   it('fails honestly when no release tags exist', async () => {
     expect(await upgrade([], { exec: fakeExec('aaa111\trefs/tags/nightly\n') })).toBe(1);
     expect(stderr.join('\n')).toContain('No kernel release tags');
+  });
+
+  it('notes that a running kernel still serves the old version after install', async () => {
+    // The pid file names THIS test process — alive, but never actually
+    // signalled: upgrade only probes it. Remove it before afterEach's stop.
+    writePidFile(resolvePaths().pidPath, process.pid);
+    try {
+      const code = await upgrade([], {
+        exec: fakeExec(TAGS_082),
+        install: (opts) =>
+          installFromDir({ fromDir: makeSourceDir(home, 'running'), version: opts.ref.replace(/^v/, '') }),
+      });
+      expect(code).toBe(0);
+      const out = stdout.join('\n');
+      expect(out).toContain(`still serving the old version`);
+      expect(out).toContain(`pid ${process.pid}`);
+      expect(out).toContain('previously stop && previously start');
+    } finally {
+      removePidFile(resolvePaths().pidPath);
+    }
   });
 });

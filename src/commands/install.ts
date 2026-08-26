@@ -7,16 +7,16 @@ import { resolvePaths } from '../lib/paths.js';
 import { applySkillTarget, type SkillApplyResult } from '../lib/skills.js';
 
 function usage(mode: 'install' | 'uninstall'): void {
-  console.log(`previously ${mode} — ${mode === 'install' ? 'write' : 'remove'} the "Previously memory" skill pack ${
+  console.log(`previously ${mode} — ${mode === 'install' ? 'write' : 'remove'} the "Previously" skill group ${
     mode === 'install' ? 'for' : 'from'
   } local agent CLIs
 
 Usage: previously ${mode} [--claude] [--codex] [--kimi] [--all] [options]
 
 Targets (default: every agent CLI detected on PATH):
-  --claude    Claude Code: ~/.claude/skills/previously-memory/SKILL.md
+  --claude    Claude Code: ~/.claude/skills/previously/ (SKILL.md + memory.md + ingest.md + setup.md)
   --codex     Codex: a sentinel-delimited block in the shared ~/.codex/AGENTS.md
-  --kimi      Kimi Code: ~/.kimi/skills/previously-memory/SKILL.md
+  --kimi      Kimi Code: ~/.kimi/skills/previously/ (same four documents)
   --all       All three agents, detected or not
 
 Options:
@@ -24,10 +24,11 @@ Options:
 
 Only Previously's own files / sentinel block are touched; foreign content is
 preserved verbatim. Before the first modification each file is backed up once
-to <file>.bak. Re-running converges idempotently.
+to <file>.bak. Re-running converges idempotently. A legacy previously-memory
+skill dir from older versions is migrated away automatically.
 
 Note: the read-only MCP server (previously mcp) is retired — this skill pack
-replaces it. Bridged agents also get the same instructions per call via the
+replaces it. Bridged agents also get the memory protocol per call via the
 bridge-exec temp workspace (CLAUDE.md / AGENTS.md), no install needed.
 `);
 }
@@ -125,7 +126,7 @@ async function runMode(args: string[], mode: 'install' | 'uninstall', deps: Inst
   for (const target of targets) {
     try {
       results.push(
-        applySkillTarget(target, mode, {
+        ...applySkillTarget(target, mode, {
           memoryRoot,
           dryRun: flags.dryRun,
           ...(deps.home !== undefined ? { home: deps.home } : {}),

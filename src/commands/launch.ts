@@ -1,49 +1,67 @@
 import { existsSync } from 'node:fs';
-import { loadConfig } from '../lib/config.js';
-import { openBrowser, type OpenResult } from '../lib/open-browser.js';
+import { countScribeSlices } from '../lib/ingest.js';
 import { resolvePaths } from '../lib/paths.js';
-import { isProcessAlive, readPidFile } from '../lib/process.js';
-import { run as startRun, type StartOptions } from './start.js';
-import { run as statusRun } from './status.js';
+import { collectStatus, nextStepSuggestion, type SystemStatus } from '../lib/system-status.js';
+import { getKernelLine } from '../lib/version-policy.js';
+import { SCRIBE_SOURCES } from '../scribe/types.js';
+import { run as initRun, type InitOptions } from './init.js';
+import { formatScribeSource, run as statusRun } from './status.js';
 
 /**
- * Bare `previously` — the one command an AI user ever needs. A small state
- * machine over the local setup:
+ * Bare `previously` — the front door:
  *
- *  1. no config.json          → honest guidance to run `previously init`, exit 1
- *  2. initialized, not running → start, open the Web UI, print a short summary
- *  3. running                  → open the Web UI, print a short summary
+ *  1. never initialized → run the initialization flow (the wizard on a TTY,
+ *     non-interactive defaults otherwise, so an agent can just say
+ *     "initialize previously" and it works)
+ *  2. initialized        → print the status dashboard (TTY) or exactly
+ *     `previously status` output (non-TTY, script-safe)
  *
- * All interactive UX lives in the kernel's Web UI — the CLI ends after
- * "started + browser opened". Non-TTY degrades to pure text: state 2 starts
- * and reports, state 3 is exactly `previously status`, so scripts and CI can
- * call the bare command safely.
+ * The bare command never starts services and never opens a browser —
+ * that is `previously start` / `previously open`.
  */
 
 export interface LaunchDeps {
   /** Defaults to stdin+stdout TTY detection. */
   isTTY?: boolean;
-  env?: NodeJS.ProcessEnv;
-  /** Dependency seams so tests never spawn real processes. */
-  startFn?: (args: string[], opts?: StartOptions) => Promise<number>;
+  /** Dependency seams so tests never touch the real machine. */
+  initFn?: (args: string[], opts?: InitOptions) => Promise<number>;
   statusFn?: (args: string[]) => Promise<number>;
-  openBrowserFn?: (url: string) => OpenResult;
+  statusCollector?: typeof collectStatus;
 }
 
-function maybeOpen(url: string, deps: LaunchDeps): void {
-  if (deps.openBrowserFn !== undefined) {
-    const result = deps.openBrowserFn(url);
-    if (!result.ok) console.error(`Could not open the browser (${result.error ?? 'unknown error'}) — open ${url} manually.`);
-    return;
+function printDashboard(s: SystemStatus): void {
+  const { paths, config } = s;
+  const url = `http://${config.hostname}:${config.port}`;
+
+  console.log('Previously — status');
+  console.log('');
+  console.log(
+    `Service:   ${s.kernelAlive ? `running (pid ${s.kernelPid})` : 'not running — start with `previously start`'} · Web UI ${url} (${s.reachable ? 'reachable' : 'unreachable'})`,
+  );
+  if (s.kernelAlive) console.log('           stop with `previously stop`');
+  if (s.kernelVersion !== null) {
+    console.log(
+      `Version:   ${s.kernelVersion} (line ${getKernelLine()}.x — ${s.compat!.ok ? 'compatible' : 'INCOMPATIBLE'})`,
+    );
   }
-  const result = openBrowser(url, { env: deps.env });
-  if (!result.ok) console.error(`Could not open the browser (${result.error ?? 'unknown error'}) — open ${url} manually.`);
-}
+  console.log(`Scribe:    ${s.scribeAlive ? `running (pid ${s.scribePid})` : 'not running'}`);
+  for (const source of SCRIBE_SOURCES) {
+    console.log(formatScribeSource(source, s.scribeStatus));
+  }
+  console.log(`Storage:   ${config.memoryRoot} — ${countScribeSlices(config.memoryRoot)} transcribed slice(s)`);
+  console.log(`Backend:   ${config.executionBackend ?? '(unset)'}`);
+  for (const bridge of s.bridges) {
+    console.log(`  bridge ${bridge.agent}: ${bridge.found ? 'found' : 'not found'}`);
+  }
 
-function printSummary(url: string, alreadyRunning: boolean): void {
-  console.log(alreadyRunning ? 'Previously is already running.' : 'Previously is running.');
-  console.log(`  Web UI: ${url}`);
-  console.log('  Stop:   previously stop');
+  const suggestion = nextStepSuggestion(s);
+  if (suggestion !== null) {
+    console.log('');
+    console.log(`Next:      ${suggestion}`);
+  }
+
+  console.log('');
+  console.log('Commands:  previously start · stop · status · logs · open · init — `previously --help` for everything');
 }
 
 export async function run(args: string[], deps: LaunchDeps = {}): Promise<number> {
@@ -51,36 +69,16 @@ export async function run(args: string[], deps: LaunchDeps = {}): Promise<number
   const paths = resolvePaths();
   const isTTY = deps.isTTY ?? (Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY));
 
-  // State 1: never initialized. init is non-interactive, so the guidance is
-  // the same with or without a terminal.
+  // State 1: never initialized — the bare command IS initialization.
   if (!existsSync(paths.configPath)) {
-    console.error('Previously is not initialized yet (no config.json).');
-    console.error('Run `previously init` to create the ~/.previously layout and a default config.');
-    return 1;
+    return (deps.initFn ?? initRun)([], { isTTY: isTTY });
   }
 
-  const config = loadConfig(paths);
-  const url = `http://${config.hostname}:${config.port}`;
-  const pid = readPidFile(paths.pidPath);
-  const alive = pid !== null && isProcessAlive(pid);
-
-  // State 2: initialized but the kernel is down — bring it up (start.run owns
-  // stale pid cleanup, port checks, scribe auto-start, honest failures).
-  if (!alive) {
-    const code = await (deps.startFn ?? startRun)([]);
-    if (code !== 0) return code;
-    if (!isTTY) {
-      console.log(`Previously is running at ${url}`);
-      return 0;
-    }
-    maybeOpen(url, deps);
-    printSummary(url, false);
-    return 0;
-  }
-
-  // State 3: already running.
+  // State 2: initialized. Non-TTY stays exactly `previously status` so
+  // scripts and CI get stable, parseable output.
   if (!isTTY) return (deps.statusFn ?? statusRun)([]);
-  maybeOpen(url, deps);
-  printSummary(url, true);
+
+  const s = await (deps.statusCollector ?? collectStatus)(paths);
+  printDashboard(s);
   return 0;
 }

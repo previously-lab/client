@@ -68,14 +68,22 @@ describe('scribe engine', () => {
         `${baseMinute}:05.000Z`,
         sessionId,
       ),
-      claudeToolResultLine('src\ntests', `${baseMinute}:06.000Z`, sessionId),
+      claudeToolResultLine('src\ntests', `${baseMinute}:06.000Z`, sessionId, { toolUseId: 'toolu_1' }),
       claudeAssistantLine([{ kind: 'text', text: '项目有 src 和 tests。' }], `${baseMinute}:08.000Z`, sessionId),
     ];
   }
 
-  function coreMd(sliceId: string): string {
+  function sliceFile(sliceId: string, name: string): string {
     const [y, m, d, hm] = sliceId.split('-');
-    return join(home, 'memory', 'episodic', 'slices', y!, m!, d!, hm!, 'timeline', 'core.md');
+    return join(home, 'memory', 'episodic', 'slices', y!, m!, d!, hm!, 'timeline', name);
+  }
+
+  function coreMd(sliceId: string): string {
+    return sliceFile(sliceId, 'core.md');
+  }
+
+  function agentMd(sliceId: string): string {
+    return sliceFile(sliceId, 'agent.md');
   }
 
   function countTurns(sliceId: string): number {
@@ -88,8 +96,8 @@ describe('scribe engine', () => {
     writeCodexSession(roots, '2026-08-10T15-30-00-rollout1', [
       codexSessionMetaLine('rollout-1', '2026-08-10T15:30:00.000Z'),
       codexMessageLine('user', '写一个 hello world', '2026-08-10T15:30:02.000Z'),
-      codexFunctionCallLine('shell', '{"command":["bash","-lc","cat > hello.py"]}', '2026-08-10T15:30:06.000Z'),
-      codexFunctionCallOutputLine('done', '2026-08-10T15:30:07.000Z'),
+      codexFunctionCallLine('shell', '{"command":["bash","-lc","cat > hello.py"]}', '2026-08-10T15:30:06.000Z', 'call_1'),
+      codexFunctionCallOutputLine('done', '2026-08-10T15:30:07.000Z', 'call_1'),
       codexMessageLine('assistant', '写好了。', '2026-08-10T15:30:09.000Z'),
     ]);
 
@@ -97,21 +105,33 @@ describe('scribe engine', () => {
     expect(summary.errors).toEqual([]);
     expect(summary.sources['claude-code'].filesProcessed).toBe(1);
     expect(summary.sources.codex.filesProcessed).toBe(1);
-    // Claude: meta/tool_result skipped → user + agent text + tool + agent text = 4.
-    expect(summary.sources['claude-code'].events).toBe(4);
-    // Codex: session_meta/output skipped → user + tool + agent = 3.
-    expect(summary.sources.codex.events).toBe(3);
+    // Claude: meta skipped → user + agent text + tool-call + tool-result + agent text = 5.
+    expect(summary.sources['claude-code'].events).toBe(5);
+    // Codex: session_meta skipped → user + tool-call + tool-result + agent = 4.
+    expect(summary.sources.codex.events).toBe(4);
 
     const claudeMd = readFileSync(coreMd('2026-08-10-1401'), 'utf8');
     expect(claudeMd).toContain('source: claude-code');
     expect(claudeMd).toContain('session_id: sess-a');
     expect(claudeMd).toContain('帮我整理项目结构');
-    expect(claudeMd).toContain('**Tool: Bash**');
+    // One exchange: a user Turn and an agent Turn sharing one turn id; tool
+    // chatter lives in agent.md, never as `**Tool:**` pseudo-turns in core.md.
+    const turnIds = [...claudeMd.matchAll(/^## Turn (\S+) — .* \((user|agent)\)$/gm)];
+    expect(turnIds.map((m) => m[2])).toEqual(['user', 'agent']);
+    expect(turnIds[0]![1]).toBe(turnIds[1]![1]);
+    expect(claudeMd).not.toContain('**Tool:**');
+
+    // The paired tool result lands as an ok tool line in the cognition record.
+    const claudeAgent = readFileSync(agentMd('2026-08-10-1401'), 'utf8');
+    expect(claudeAgent).toContain(`## Cognition ${turnIds[0]![1]} — `);
+    expect(claudeAgent).toContain('### Tools');
+    expect(claudeAgent).toContain('- `Bash`(ls -la) → ok');
 
     const codexMd = readFileSync(coreMd('2026-08-10-1530'), 'utf8');
     expect(codexMd).toContain('source: codex');
     expect(codexMd).toContain('session_id: rollout-1');
     expect(codexMd).toContain('写一个 hello world');
+    expect(readFileSync(agentMd('2026-08-10-1530'), 'utf8')).toContain('→ ok');
 
     const index = JSON.parse(
       readFileSync(join(home, 'memory', 'episodic', 'slices', '2026', '08', '_index.json'), 'utf8'),
@@ -126,7 +146,7 @@ describe('scribe engine', () => {
     const engine = setup();
     const file = writeClaudeSession(roots, 'sess-a', claudeSessionLines('sess-a', '2026-08-10T14:01'));
     await engine.scanOnce();
-    expect(countTurns('2026-08-10-1401')).toBe(4);
+    expect(countTurns('2026-08-10-1401')).toBe(2);
 
     appendFileSync(
       file,
@@ -136,7 +156,8 @@ describe('scribe engine', () => {
     );
     const result = await engine.processFile(file, 'claude-code');
     expect(result!.newEvents).toBe(2);
-    expect(countTurns('2026-08-10-1401')).toBe(6);
+    // Second exchange → a second user/agent Turn pair.
+    expect(countTurns('2026-08-10-1401')).toBe(4);
     expect(readFileSync(coreMd('2026-08-10-1401'), 'utf8')).toContain('再帮我看看测试');
   });
 
@@ -155,14 +176,14 @@ describe('scribe engine', () => {
     // New input after the restart is picked up exactly once.
     appendFileSync(file, claudeUserLine('重启后还在吗', '2026-08-10T14:09:00.000Z', 'sess-a') + '\n', 'utf8');
     await engine2.scanOnce();
-    expect(countTurns('2026-08-10-1401')).toBe(5);
+    expect(countTurns('2026-08-10-1401')).toBe(3);
   });
 
   it('detects truncation: a shrunken file is re-read from byte 0', async () => {
     const engine = setup();
     const file = writeClaudeSession(roots, 'sess-a', claudeSessionLines('sess-a', '2026-08-10T14:01'));
     await engine.scanOnce();
-    expect(countTurns('2026-08-10-1401')).toBe(4);
+    expect(countTurns('2026-08-10-1401')).toBe(2);
 
     // Simulate log rotation: same path, brand-new shorter content.
     writeFileSync(
@@ -210,7 +231,7 @@ describe('scribe engine', () => {
     appendFileSync(file, '{"type":"user","message":{"role":"user","content":"半行"', 'utf8');
     const partial = await engine.processFile(file, 'claude-code');
     expect(partial!.newEvents).toBe(0);
-    expect(countTurns('2026-08-10-1401')).toBe(4);
+    expect(countTurns('2026-08-10-1401')).toBe(2);
 
     // Complete it; the merged line parses and lands.
     appendFileSync(file, '},"timestamp":"2026-08-10T14:07:00.000Z","sessionId":"sess-a"}\n', 'utf8');
@@ -288,21 +309,26 @@ describe('scribe engine', () => {
       kimiWireUserLine('用户的问题', t0 + 1000),
       kimiWireThinkLine('让我想想…', t0 + 2000),
       kimiWireAgentTextLine('我的回答。', t0 + 3000),
-      kimiWireToolCallLine('Bash', { command: 'ls -la' }, t0 + 4000),
+      kimiWireToolCallLine('Bash', { command: 'ls -la' }, t0 + 4000, 'tool_pair1'),
     ]);
 
     const summary = await engine.scanOnce();
     expect(summary.errors).toEqual([]);
-    // user + agent text + tool call; turn.prompt duplicate and think skipped.
-    expect(summary.sources['kimi-code'].events).toBe(3);
+    // user + thinking + agent text + tool call; turn.prompt duplicate skipped.
+    expect(summary.sources['kimi-code'].events).toBe(4);
     expect(summary.sources['kimi-code'].filesProcessed).toBe(1);
 
     const md = readFileSync(coreMd('2026-08-10-1700'), 'utf8');
     expect(md).toContain('source: kimi-code');
     expect(md).toContain('session_id: session_aaaa-bbbb/main');
-    expect(md).toContain('**Tool: Bash**');
+    expect(md).not.toContain('**Tool:**');
     // turn.prompt must not double-transcribe the user's text.
     expect((md.match(/用户的问题/g) ?? []).length).toBe(1);
+
+    // Thinking and the unpaired tool call land in the cognition record.
+    const agent = readFileSync(agentMd('2026-08-10-1700'), 'utf8');
+    expect(agent).toContain('### Thinking\n\n让我想想…');
+    expect(agent).toContain('- `Bash`(ls -la) → ?');
   });
 
   it('kimi-code: subagent wire files get their own session ids', async () => {

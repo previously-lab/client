@@ -123,18 +123,6 @@ function resolveAgent(flag: string | undefined, configured: string | null): Brid
   );
 }
 
-/**
- * The absolute self-invocation prefix injected into phase skill docs as
- * `{{PREVIOUSLY_CMD}}`: the spawned agent CLI must be able to run the memory
- * commands even when no `previously` shim is on ITS PATH (dev checkouts,
- * non-global installs). Falls back to the bare name when argv[1] is unknown.
- */
-function previouslyCommandPrefix(): string {
-  const entry = process.argv[1];
-  if (!entry) return 'previously';
-  return `"${process.execPath}" "${entry}"`;
-}
-
 export async function run(args: string[], opts: BridgeExecOptions = {}): Promise<number> {
   const { values } = parseArgs({
     args,
@@ -168,13 +156,12 @@ export async function run(args: string[], opts: BridgeExecOptions = {}): Promise
   // its cwd-convention instruction file (CLAUDE.md / AGENTS.md) filled with
   // the skill document — the phase-specific doc when the payload delegates a
   // whole workflow phase, else the generic memory doc (legacy delegateTask
-  // path, byte-compatible).
+  // path, byte-compatible). Phase docs invoke the client by its registered
+  // command name (`previously …`), same as a user-level install.
   const workspace = materializeBridgeWorkspace(
     agent,
     memoryRoot,
-    task.phase !== undefined
-      ? renderPhaseSkillDoc(task.phase, memoryRoot, previouslyCommandPrefix())
-      : undefined,
+    task.phase !== undefined ? renderPhaseSkillDoc(task.phase, memoryRoot) : undefined,
   );
 
   // Forward termination to the CLI child: kill-on-SIGTERM, no orphans.

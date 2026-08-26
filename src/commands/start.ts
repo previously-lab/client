@@ -2,11 +2,13 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { loadConfig } from '../lib/config.js';
+import { applyAudit, auditConfig } from '../lib/config-doctor.js';
 import { isPortOpen, waitForHealthy } from '../lib/health.js';
 import { buildKernelEnv } from '../lib/kernel-env.js';
 import { resolveKernel } from '../lib/kernel.js';
 import { resolvePaths } from '../lib/paths.js';
 import { checkCompat } from '../lib/version-policy.js';
+import { run as initRun, type InitOptions } from './init.js';
 import {
   isProcessAlive,
   readPidFile,
@@ -23,16 +25,39 @@ export interface StartOptions {
   startScribe?: boolean;
   /** Test hook: scribe entry script override (defaults to this build's cli.js). */
   scribeEntry?: string;
+  /** Test hook: init delegation when config.json is missing. */
+  initFn?: (args: string[], opts?: InitOptions) => Promise<number>;
 }
 
 /**
  * `previously start` — daemonize the kernel standalone build and wait for it
  * to answer on its port. Fails honestly (per the design's failure philosophy)
  * when the artifact is missing or the port is taken.
+ *
+ * Dependencies are enforced, not assumed: with no config.json, start first
+ * delegates to init (wizard on a TTY, non-interactive defaults otherwise);
+ * every start then runs the config doctor so the kernel never launches with
+ * a broken config.
  */
 export async function run(args: string[], opts: StartOptions = {}): Promise<number> {
   void args;
   const paths = resolvePaths();
+
+  if (!existsSync(paths.configPath)) {
+    console.log('Previously is not initialized yet — running init first.');
+    const code = await (opts.initFn ?? initRun)([], {});
+    if (code !== 0) {
+      console.error('Initialization failed — cannot start.');
+      return code;
+    }
+  }
+
+  const audit = auditConfig(paths);
+  if (audit.repairs.length > 0) {
+    for (const repair of audit.repairs) console.log(`  repaired: ${repair}`);
+    applyAudit(paths, audit);
+  }
+
   const config = loadConfig(paths);
 
   const existingPid = readPidFile(paths.pidPath);

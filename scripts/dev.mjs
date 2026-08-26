@@ -5,8 +5,8 @@
  * Discovers the agent (kernel) repo among this repo's SIBLING directories,
  * builds its standalone artifact, builds this CLI, makes sure ~/.previously
  * is initialized (auto-detecting installed agent CLIs), installs the fresh
- * kernel, and finally hands over to the bare `previously` launcher (start +
- * open browser).
+ * kernel, and finally starts the service and opens the Web UI
+ * (`previously start` + `previously open`).
  *
  * Discovery: every sibling directory whose name matches one of
  *   aftrbrez · agent · previously-agent · previously-kernel · kernel
@@ -137,32 +137,28 @@ run('pnpm', ['build'], CLIENT_ROOT);
 // The steps below reuse the CLI's own (tested) logic straight from dist/.
 const dist = (name) => pathToFileURL(join(CLIENT_ROOT, 'dist', 'lib', name)).href;
 const { resolvePaths } = await import(dist('paths.js'));
-const { defaultConfig, saveConfig } = await import(dist('config.js'));
 const { scanEnvironment } = await import(dist('detect.js'));
 const { installFromDir } = await import(dist('kernel.js'));
 const { getKernelLine } = await import(dist('version-policy.js'));
 
 const paths = resolvePaths();
 
-if (!existsSync(paths.configPath)) {
-  step('Initializing ~/.previously (first run)');
-  const { mkdirSync } = await import('node:fs');
-  for (const dir of [paths.home, paths.memoryDir, paths.kernelDir, paths.kernelVersionsDir, paths.logsDir]) {
-    mkdirSync(dir, { recursive: true });
-  }
-  const scan = scanEnvironment();
-  const agent = ['claude', 'codex', 'kimi'].find((n) => scan.clis.find((c) => c.name === n)?.found) ?? null;
-  const config = defaultConfig(paths);
-  config.executionBackend = agent;
-  if (agent !== null) config.brain = { type: 'bridge', agent };
-  saveConfig(config, paths);
-  console.log(`  brain:    ${agent !== null ? `bridge:${agent} (subscription — no API key needed)` : 'environment keys (no agent CLI found)'}`);
-  console.log(`  backend:  ${agent ?? '(unset)'}`);
-  if (agent === null) {
-    console.log('  no claude/codex/kimi CLI found on PATH — install one, or set an API key env and re-run.');
-  }
-} else {
-  step(`Config exists (${paths.configPath}) — keeping it`);
+// Initialization is the CLI's own `init` command — single source of truth:
+// first run writes the config (bridge backend → brain included), every run
+// audits and repairs the config. --skip-ingest keeps the dev loop fast (run
+// bare `previously` once for the guided history import).
+step('Initializing ~/.previously (via `previously init`)');
+const { run: initRun } = await import(pathToFileURL(join(CLIENT_ROOT, 'dist', 'commands', 'init.js')).href);
+const scan = scanEnvironment();
+const agent = ['claude', 'codex', 'kimi'].find((n) => scan.clis.find((c) => c.name === n)?.found) ?? null;
+const initArgs = ['--non-interactive', '--skip-ingest'];
+if (!existsSync(paths.configPath)) initArgs.push('--backend', agent ?? 'none');
+if ((await initRun(initArgs, { isTTY: false })) !== 0) {
+  fail('initialization failed — see the output above.');
+}
+console.log(`  brain:    ${agent !== null ? `bridge:${agent} (subscription — no API key needed)` : 'environment keys (no agent CLI found)'}`);
+if (agent === null) {
+  console.log('  no claude/codex/kimi CLI found on PATH — install one, or set an API key env and re-run.');
 }
 
 step('Installing the kernel into ~/.previously');
@@ -188,15 +184,20 @@ for (const entry of readdirSync(paths.kernelVersionsDir, { withFileTypes: true }
 
 if (noStart) {
   step('Done (--no-start)');
-  console.log('  Run `previously` (or node dist/cli.js) to start.');
+  console.log('  Run `previously start` (or node dist/cli.js start) to start.');
   process.exit(0);
 }
 
 step('Launching Previously');
-// Hand over to the bare launcher: start (if needed) + open the browser.
-// Inherit stdio so the launcher owns the terminal.
-const child = spawnSync(process.execPath, [join(CLIENT_ROOT, 'dist', 'cli.js')], {
+// Start the kernel + scribe, then open the Web UI. (The bare `previously`
+// command no longer starts anything — it shows the status dashboard.)
+const started = spawnSync(process.execPath, [join(CLIENT_ROOT, 'dist', 'cli.js'), 'start'], {
   cwd: CLIENT_ROOT,
   stdio: 'inherit',
 });
-process.exit(child.status ?? 1);
+if (started.status !== 0) process.exit(started.status ?? 1);
+const opened = spawnSync(process.execPath, [join(CLIENT_ROOT, 'dist', 'cli.js'), 'open'], {
+  cwd: CLIENT_ROOT,
+  stdio: 'inherit',
+});
+process.exit(opened.status ?? 1);

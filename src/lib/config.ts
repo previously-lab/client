@@ -97,3 +97,29 @@ export function saveConfig(config: PreviouslyConfig, paths: PreviouslyPaths = re
     }
   }
 }
+
+/**
+ * Resolve which subscription CLI serves as the local brain for client-side
+ * model work (ingest --mark, card bootstrap): an explicit flag wins, else the
+ * configured executionBackend. Honest, actionable error when neither yields a
+ * bridge agent — these features never touch API keys themselves.
+ */
+export function resolveBrainAgent(flag: string | undefined, config: PreviouslyConfig): 'claude' | 'codex' | 'kimi' {
+  const valid = (v: string): v is 'claude' | 'codex' | 'kimi' => v === 'claude' || v === 'codex' || v === 'kimi';
+  if (flag !== undefined) {
+    if (valid(flag)) return flag;
+    throw new Error(`Unknown --agent value: ${flag} (expected claude|codex|kimi)`);
+  }
+  const configured = config.executionBackend;
+  if (configured !== null && valid(configured)) return configured;
+  if (configured !== null) {
+    throw new Error(
+      `executionBackend is "${configured}", which is not a subscription bridge CLI. ` +
+        'Pass --agent claude|codex|kimi, or set a default with `previously init --backend ...`.',
+    );
+  }
+  throw new Error(
+    'No bridge agent selected. Pass --agent claude|codex|kimi, or set a default with ' +
+      '`previously init --backend claude|codex|kimi`.',
+  );
+}

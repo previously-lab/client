@@ -4,7 +4,7 @@ import { resolvePaths } from '../lib/paths.js';
 import type { ScribeStatus } from '../scribe/status.js';
 import { SCRIBE_SOURCES, type ScribeSource } from '../scribe/types.js';
 
-function formatScribeSource(source: ScribeSource, status: ScribeStatus | null): string {
+export function formatScribeSource(source: ScribeSource, status: ScribeStatus | null): string {
   const s = status?.sources[source];
   if (s === undefined) return `  ${source}: (no status yet)`;
   if (!s.rootPresent) return `  ${source}: root absent (${s.root})`;

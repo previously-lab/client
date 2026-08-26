@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeFileAtomic } from '../lib/atomic.js';
 import { parseSliceId, sliceIdToRelDir } from '../lib/slices.js';
@@ -11,8 +11,17 @@ import type { ScribeSource, SessionState, TranscriptEvent } from './types.js';
  * and live slices under `memory/episodic/slices/2026/`):
  *
  *   episodic/slices/YYYY/MM/DD/HHMM/timeline/core.md   (frontmatter + turns)
+ *   episodic/slices/YYYY/MM/DD/HHMM/timeline/agent.md  (cognition record)
  *   episodic/slices/YYYY/MM/DD/HHMM/timeline/appendix.md (unparseable lines)
  *   episodic/slices/YYYY/MM/_index.json                 (monthly manifest)
+ *
+ * Turn assembly: parsers emit a flat event stream; here it is grouped into
+ * exchanges — a user message plus everything the agent did until the next
+ * user message. core.md carries the conversation (one user Turn + one agent
+ * Turn per exchange, sharing the exchange's turn id, like the kernel);
+ * agent.md carries the process (one `## Cognition <turnId>` block per
+ * exchange: `### Thinking` reasoning, `### Tools` one line per call with
+ * its paired ok/error result).
  *
  * Everything here is deterministic: same events in → same bytes out. Re-writing
  * a slice whose content is unchanged is skipped byte-for-byte, so re-processing
@@ -87,18 +96,88 @@ export function resolveSliceId(
 }
 
 /** Deterministic 6-char base64url turn id (the kernel's are random; ours must
- *  be content-derived so a re-render produces byte-identical output). */
-function turnIdFor(source: ScribeSource, sessionId: string, index: number, event: TranscriptEvent): string {
+ *  be content-derived so a re-render produces byte-identical output). One id
+ *  per exchange: the user/agent core blocks and the cognition block share it,
+ *  which is how the kernel UI pairs them. */
+function turnIdFor(source: ScribeSource, sessionId: string, index: number, exchange: Exchange): string {
+  const anchor = exchange.user ?? exchange.agentEvents[0]!;
   const hash = createHash('sha256')
-    .update(`${source}\n${sessionId}\n${index}\n${event.timestamp}\n${event.role}\n${event.toolName ?? ''}\n${event.text}`)
+    .update(`${source}\n${sessionId}\n${index}\n${anchor.timestamp}\n${anchor.kind}\n${anchor.text}`)
     .digest();
   return hash.subarray(0, 4).toString('base64url').slice(0, 6);
 }
 
 /** YAML scalar for the narrow frontmatter shape we emit (strings/arrays only). */
-function yamlScalar(value: string): string {
+export function yamlScalar(value: string): string {
   if (/^[A-Za-z0-9._/-]+$/.test(value)) return value;
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * One conversational exchange: a user message plus every agent event until
+ * the next user message. Agent events before the first user message (session
+ * resumed mid-work, truncated logs) form a user-less leading exchange.
+ */
+export interface Exchange {
+  user: TranscriptEvent | null;
+  /** agent-text / thinking / tool-call / tool-result, in stream order. */
+  agentEvents: TranscriptEvent[];
+}
+
+/** Group the flat event stream into exchanges (user message = boundary). */
+export function assembleExchanges(events: TranscriptEvent[]): Exchange[] {
+  const exchanges: Exchange[] = [];
+  let current: Exchange | null = null;
+  for (const event of events) {
+    if (event.kind === 'user') {
+      current = { user: event, agentEvents: [] };
+      exchanges.push(current);
+    } else {
+      if (current === null) {
+        current = { user: null, agentEvents: [] };
+        exchanges.push(current);
+      }
+      current.agentEvents.push(event);
+    }
+  }
+  return exchanges;
+}
+
+const TOOL_ERROR_EXCERPT_CAP = 200;
+
+/** One `### Tools` line per call, paired with its result via toolCallId. */
+function renderToolLines(exchange: Exchange): string[] {
+  const lines: string[] = [];
+  const usedResults = new Set<number>();
+  const results = exchange.agentEvents.filter((e) => e.kind === 'tool-result');
+  for (const event of exchange.agentEvents) {
+    if (event.kind !== 'tool-call') continue;
+    let status = '?';
+    if (event.toolCallId !== undefined) {
+      const idx = results.findIndex(
+        (r, i) => !usedResults.has(i) && r.kind === 'tool-result' && r.toolCallId === event.toolCallId,
+      );
+      if (idx >= 0) {
+        usedResults.add(idx);
+        const result = results[idx]!;
+        if (result.kind === 'tool-result') {
+          status = result.isError
+            ? `error: ${result.text.slice(0, TOOL_ERROR_EXCERPT_CAP)}`
+            : 'ok';
+        }
+      }
+    }
+    lines.push(`- \`${event.toolName}\`(${event.text}) → ${status}`);
+  }
+  // Results with no matching call in this exchange (task notifications,
+  // cross-turn results): render as standalone lines, never dropped.
+  results.forEach((result, i) => {
+    if (usedResults.has(i) || result.kind !== 'tool-result') return;
+    const name = result.toolName ?? 'tool';
+    const status = result.isError ? 'error' : 'ok';
+    lines.push(`- \`${name}\` → ${status}${result.text !== '' ? `: ${result.text}` : ''}`);
+  });
+  return lines;
 }
 
 /**
@@ -131,12 +210,51 @@ export function renderSliceMarkdown(
     'loops: []',
     '---',
   ];
-  const turns = session.events.map((event, index) => {
-    const id = turnIdFor(session.source, session.sessionId, index, event);
-    const body = event.toolName !== undefined ? `**Tool: ${event.toolName}**\n\n${event.text}` : event.text;
-    return `## Turn ${id} — ${event.timestamp} (${event.role})\n\n${body}`;
+  const exchanges = assembleExchanges(session.events);
+  const blocks: string[] = [];
+  exchanges.forEach((exchange, index) => {
+    const id = turnIdFor(session.source, session.sessionId, index, exchange);
+    if (exchange.user !== null) {
+      blocks.push(`## Turn ${id} — ${exchange.user.timestamp} (user)\n\n${exchange.user.text}`);
+    }
+    const texts = exchange.agentEvents.filter((e) => e.kind === 'agent-text');
+    if (texts.length > 0) {
+      const last = texts[texts.length - 1]!;
+      const body = texts.map((e) => e.text).join('\n\n');
+      blocks.push(`## Turn ${id} — ${last.timestamp} (agent)\n\n${body}`);
+    }
   });
-  return lines.join('\n') + '\n' + turns.join('\n\n') + '\n';
+  return lines.join('\n') + '\n' + blocks.join('\n\n') + '\n';
+}
+
+/**
+ * Render the cognition record (`timeline/agent.md`) in the kernel's format:
+ * one `## Cognition <turnId> — <ISO>` block per exchange, with `### Thinking`
+ * (reasoning verbatim) and `### Tools` (one line per call → ok/error).
+ * Returns null when the session produced no cognition at all — the caller
+ * then ensures no agent.md exists (the kernel UI hides "thoughts" cleanly
+ * only when the file is absent).
+ */
+export function renderAgentMarkdown(session: SessionState): string | null {
+  const exchanges = assembleExchanges(session.events);
+  const blocks: string[] = [];
+  exchanges.forEach((exchange, index) => {
+    const thinkings = exchange.agentEvents.filter((e) => e.kind === 'thinking');
+    const toolLines = renderToolLines(exchange);
+    if (thinkings.length === 0 && toolLines.length === 0) return;
+    const id = turnIdFor(session.source, session.sessionId, index, exchange);
+    const anchor = exchange.agentEvents[0] ?? exchange.user!;
+    const sections: string[] = [];
+    if (thinkings.length > 0) {
+      sections.push(`### Thinking\n\n${thinkings.map((e) => e.text).join('\n\n')}`);
+    }
+    if (toolLines.length > 0) {
+      sections.push(`### Tools\n\n${toolLines.join('\n')}`);
+    }
+    blocks.push(`## Cognition ${id} — ${anchor.timestamp}\n\n${sections.join('\n\n')}`);
+  });
+  if (blocks.length === 0) return null;
+  return blocks.join('\n\n') + '\n';
 }
 
 /** Render the appendix file holding raw lines that failed to parse (§5.3). */
@@ -160,7 +278,9 @@ export function renderAppendixMarkdown(session: SessionState, sliceId: string): 
 }
 
 /** One entry in the monthly manifest, mirroring the agent repo's
- *  SliceIndexEntry plus the scribe provenance labels. */
+ *  SliceIndexEntry plus the scribe provenance labels. `source` is a free-form
+ *  provenance label: one of the ScribeSource values for transcribed logs,
+ *  anything the caller declared for externally submitted slices (ingest). */
 export interface ScribeIndexEntry {
   id: string;
   focus: string;
@@ -170,7 +290,7 @@ export interface ScribeIndexEntry {
   start: string;
   open_loops: string[];
   decisions: string[];
-  source: ScribeSource;
+  source: string;
   sessionId: string;
 }
 
@@ -260,6 +380,19 @@ export function writeSessionSlice(
   const rendered = renderSliceMarkdown(session, sliceId, timezone);
   const coreChanged = !existsSync(core) || readFileSync(core, 'utf8') !== rendered;
   if (coreChanged) writeFileAtomic(core, rendered);
+
+  // Cognition record: written when the session produced any, REMOVED when a
+  // re-render yields none (stale files from earlier parser versions must not
+  // linger — the kernel UI treats an absent agent.md as "no thoughts").
+  const agentPath = join(dir, 'agent.md');
+  const agentRendered = renderAgentMarkdown(session);
+  if (agentRendered !== null) {
+    if (!existsSync(agentPath) || readFileSync(agentPath, 'utf8') !== agentRendered) {
+      writeFileAtomic(agentPath, agentRendered);
+    }
+  } else if (existsSync(agentPath)) {
+    rmSync(agentPath, { force: true });
+  }
 
   if (session.appendix.length > 0) {
     const appendix = join(dir, 'appendix.md');

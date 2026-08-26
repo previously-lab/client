@@ -217,10 +217,9 @@ markdown fences, no prose before or after:
 
 /**
  * Render the phase skill document with the absolute memory root and the
- * self-invocation command prefix filled in. `previouslyCmd` defaults to the
- * bare `previously` name (user-level installs, tests); bridge-exec passes an
- * absolute `"<node>" "<cli.js>"` prefix so the commands resolve no matter
- * what PATH the spawned agent CLI sees.
+ * command prefix filled in. `previouslyCmd` defaults to the bare registered
+ * command name `previously` — the only form shipped to agents (user-level
+ * installs and bridge phase docs alike); the parameter exists for tests.
  */
 export function renderPhaseSkillDoc(
   phase: BridgePhase,

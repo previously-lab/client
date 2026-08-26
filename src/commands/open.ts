@@ -11,7 +11,7 @@ export interface OpenCommandDeps {
 
 /**
  * `previously open` — open the Web UI in the browser. Fails honestly when
- * nothing is listening: the fix is to run `previously`, not to retry open.
+ * nothing is listening: the fix is `previously start`, not retrying open.
  */
 export async function run(args: string[], deps: OpenCommandDeps = {}): Promise<number> {
   void args;
@@ -24,7 +24,7 @@ export async function run(args: string[], deps: OpenCommandDeps = {}): Promise<n
   const reachable = await isPortOpen(config.port, config.hostname, 1_500);
   if (!alive && !reachable) {
     console.error(`Previously is not running — nothing to open at ${url}.`);
-    console.error('Run `previously` to start it.');
+    console.error('Run `previously start` to start it.');
     return 1;
   }
 

@@ -4,6 +4,7 @@ import * as agentlog from './commands/agentlog.js';
 import * as bridgeExec from './commands/bridge-exec.js';
 import * as card from './commands/card.js';
 import * as init from './commands/init.js';
+import * as ingest from './commands/ingest.js';
 import * as install from './commands/install.js';
 import * as kernel from './commands/kernel.js';
 import * as launch from './commands/launch.js';
@@ -24,6 +25,7 @@ type CommandHandler = (args: string[]) => Promise<number>;
 
 const commands: Record<string, CommandHandler> = {
   init: init.run,
+  ingest: ingest.run,
   start: start.run,
   stop: stop.run,
   status: status.run,
@@ -51,28 +53,35 @@ function usage(): void {
 Usage: previously [command]
 
 Everyday:
-  (no command)  Launch Previously: start the service (if needed), open the
-                Web UI, and print a short summary
+  (no command)  The front door: run initialization (first run) or show the
+                status dashboard; never starts services or opens a browser
   start         Start the kernel in the background and wait until it responds
+                (runs init first when uninitialized; repairs a broken config)
   stop          Stop the background kernel and scribe
   status        Show kernel status, version/compat, and config summary (+ next-step hint)
   logs          Tail the kernel and scribe logs (-n/--lines, -s/--source kernel|scribe)
   open          Open the Web UI in your browser
 
 Advanced:
-  init        Create the ~/.previously layout and config (--force; --backend claude|codex|kimi|api-key|none)
+  init        Initialize Previously: layout + config + history import in one go.
+              Interactive wizard on a TTY; flags for scripts/agents:
+              --non-interactive --backend claude|codex|kimi|api-key|none
+              --memory-root <path> --rebuild [--include-custom] --skip-ingest --json
+              Every run audits and repairs a broken config (config.json.bak kept)
   kernel      Manage kernel versions (install / list / current / rollback)
   upgrade     Install the newest kernel release within the supported version line
-  install     Write the "Previously memory" skill pack for detected agent CLIs (--claude / --codex / --kimi / --all)
-  uninstall   Remove the Previously skill pack from agent configs
+  install     Write the "Previously" skill group for detected agent CLIs (--claude / --codex / --kimi / --all)
+  uninstall   Remove the Previously skill group from agent configs
   watch       Run the scribe in the foreground (fs watch → time slices; start includes it)
   scribe      Scribe one-shot scan: scribe once [--source claude-code|codex|kimi-code|gemini]
+  ingest      Admit external content into memory: --source (raw logs) / --submit (rendered slice, validated) / --mark (semantic marking, spends tokens)
   bridge-exec Subscription bridge entry for the kernel delegateTask tool (JSON on stdin, result on stdout)
   recall      Constrained memory search for bridged agents: recall "<query>" (pointers only)
   readslice   Constrained slice reader for bridged agents: readslice <sliceId> [--start N --end N]
   timeline    Constrained timeline reader for bridged agents: timeline [--month YYYY-MM] [--day MM-DD]
   strands     Constrained strand reader for bridged agents: strands [name]
-  card        Constrained card reader for bridged agents: card [--slice <sliceId>]
+  card        Constrained card reader for bridged agents: card [--slice <sliceId>];
+              card bootstrap builds the first 前情提要 after a history ingest (spends tokens)
   slicesummary Constrained slice-summary reader for bridged agents: slicesummary <sliceId>
   agentlog    Constrained cognition-record reader for bridged agents: agentlog <sliceId> [--start N --end N]
 
