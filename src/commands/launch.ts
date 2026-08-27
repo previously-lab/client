@@ -3,6 +3,20 @@ import { countScribeSlices } from '../lib/ingest.js';
 import { resolvePaths } from '../lib/paths.js';
 import { collectStatus, nextStepSuggestion, type SystemStatus } from '../lib/system-status.js';
 import { getPinnedKernelVersion } from '../lib/version-policy.js';
+import {
+  banner,
+  bold,
+  cmd,
+  cmdTable,
+  emph,
+  gray,
+  green,
+  muted,
+  printBoxed,
+  red,
+  stylingOn,
+  yellow,
+} from '../lib/ansi.js';
 import { SCRIBE_SOURCES } from '../scribe/types.js';
 import { run as initRun, type InitOptions } from './init.js';
 import { formatScribeSource, run as statusRun } from './status.js';
@@ -33,35 +47,109 @@ function printDashboard(s: SystemStatus): void {
   const { paths, config } = s;
   const url = `http://${config.hostname}:${config.port}`;
 
-  console.log('Previously — status');
-  console.log('');
-  console.log(
-    `Service:   ${s.kernelAlive ? `running (pid ${s.kernelPid})` : 'not running — start with `previously start`'} · Web UI ${url} (${s.reachable ? 'reachable' : 'unreachable'})`,
+  const lines: string[] = [];
+  lines.push(
+    `${bold('Service:')}   ${s.kernelAlive ? green(`running (pid ${s.kernelPid})`) : 'not running — start with ' + cmd('`previously start`')} · Web UI ${emph(url)} (${s.reachable ? green('reachable') : red('unreachable')})`,
   );
-  if (s.kernelAlive) console.log('           stop with `previously stop`');
+  if (s.kernelAlive) lines.push(`           stop with ${cmd('`previously stop`')}`);
   if (s.kernelVersion !== null) {
-    console.log(
-      `Version:   ${s.kernelVersion} (pinned ${getPinnedKernelVersion()} — ${s.compat!.ok ? 'compatible' : 'INCOMPATIBLE'})`,
+    lines.push(
+      `${bold('Version:')}   ${s.kernelVersion} (pinned ${getPinnedKernelVersion()} — ${s.compat!.ok ? green('compatible') : red(bold('INCOMPATIBLE'))})`,
     );
   }
-  console.log(`Scribe:    ${s.scribeAlive ? `running (pid ${s.scribePid})` : 'not running'}`);
+  lines.push(`${bold('Scribe:')}    ${s.scribeAlive ? green(`running (pid ${s.scribePid})`) : muted('not running')}`);
   for (const source of SCRIBE_SOURCES) {
-    console.log(formatScribeSource(source, s.scribeStatus));
+    lines.push(formatScribeSource(source, s.scribeStatus));
   }
-  console.log(`Storage:   ${config.memoryRoot} — ${countScribeSlices(config.memoryRoot)} transcribed slice(s)`);
-  console.log(`Backend:   ${config.executionBackend ?? '(unset)'}`);
+  lines.push(`${bold('Storage:')}   ${emph(config.memoryRoot)} — ${countScribeSlices(config.memoryRoot)} transcribed slice(s)`);
+  lines.push(`${bold('Backend:')}   ${config.executionBackend ?? muted('(unset)')}`);
   for (const bridge of s.bridges) {
-    console.log(`  bridge ${bridge.agent}: ${bridge.found ? 'found' : 'not found'}`);
+    lines.push(`  bridge ${bold(bridge.agent)}: ${bridge.found ? green('found') : yellow('not found')}`);
   }
 
   const suggestion = nextStepSuggestion(s);
   if (suggestion !== null) {
-    console.log('');
-    console.log(`Next:      ${suggestion}`);
+    lines.push('');
+    lines.push(`${yellow(bold('Next:'))}      ${suggestion}`);
   }
 
+  lines.push('');
+  lines.push(gray('Commands:  previously start · stop · status · logs · open · init — `previously --help` for everything'));
+
+  printBoxed(lines, { title: 'Previously — status' });
+}
+
+/**
+ * Styled dashboard (TTY with color): brand banner + per-subsystem cards +
+ * a `$`-prompt command table — the Vue CLI / Next.js CLI shape. Plain
+ * terminals and scripts keep printDashboard's byte-stable output.
+ */
+function printDashboardFancy(s: SystemStatus): void {
+  const { config } = s;
+  const url = `http://${config.hostname}:${config.port}`;
+
+  for (const line of banner('Previously', 'local long-term memory for your agents')) console.log(line);
   console.log('');
-  console.log('Commands:  previously start · stop · status · logs · open · init — `previously --help` for everything');
+
+  // ── Service ────────────────────────────────────────────────
+  const service: string[] = [];
+  if (s.kernelAlive) {
+    service.push(`${green('✓')} ${bold('Kernel')}   running (pid ${s.kernelPid})`);
+    service.push(`          ${muted(`stop with ${cmd('`previously stop`')}`)}`);
+  } else {
+    service.push(`${red('✗')} ${bold('Kernel')}   not running — start with ${cmd('`previously start`')}`);
+  }
+  service.push(
+    `${s.reachable ? green('✓') : red('✗')} ${bold('Web UI')}   ${emph(url)} (${s.reachable ? green('reachable') : red('unreachable')})`,
+  );
+  if (s.kernelVersion !== null) {
+    service.push(
+      `  ${bold('Version')}  ${s.kernelVersion} (pinned ${getPinnedKernelVersion()} — ${s.compat!.ok ? green('compatible') : red(bold('INCOMPATIBLE'))})`,
+    );
+  }
+  printBoxed(service, { title: 'Service', pad: true });
+  console.log('');
+
+  // ── Scribe ─────────────────────────────────────────────────
+  const scribe: string[] = [];
+  scribe.push(
+    s.scribeAlive ? `${green('✓')} running (pid ${s.scribePid})` : `${red('✗')} ${muted('not running')}`,
+  );
+  for (const source of SCRIBE_SOURCES) {
+    scribe.push(formatScribeSource(source, s.scribeStatus).replace(/^  /, ''));
+  }
+  printBoxed(scribe, { title: 'Scribe', pad: true });
+  console.log('');
+
+  // ── Setup ──────────────────────────────────────────────────
+  const bridges = s.bridges
+    .map((b) => `${bold(b.agent)} ${b.found ? green('✓') : red('✗')}`)
+    .join(muted(' · '));
+  printBoxed(
+    [
+      `${bold('Storage')}  ${emph(config.memoryRoot)} — ${countScribeSlices(config.memoryRoot)} transcribed slice(s)`,
+      `${bold('Backend')}  ${config.executionBackend ?? muted('(unset)')}`,
+      `${bold('Bridges')}  ${bridges}`,
+    ],
+    { title: 'Setup', pad: true },
+  );
+
+  // ── Next steps ─────────────────────────────────────────────
+  const suggestion = nextStepSuggestion(s);
+  if (suggestion !== null) {
+    console.log('');
+    console.log(`  ${yellow('→')} ${suggestion}`);
+  }
+  console.log('');
+  for (const line of cmdTable([
+    ['previously start', 'start the kernel + scribe'],
+    ['previously stop', 'stop them'],
+    ['previously open', 'open the Web UI'],
+    ['previously logs', 'tail the logs'],
+    ['previously --help', 'everything else'],
+  ])) {
+    console.log(line);
+  }
 }
 
 export async function run(args: string[], deps: LaunchDeps = {}): Promise<number> {
@@ -79,6 +167,7 @@ export async function run(args: string[], deps: LaunchDeps = {}): Promise<number
   if (!isTTY) return (deps.statusFn ?? statusRun)([]);
 
   const s = await (deps.statusCollector ?? collectStatus)(paths);
-  printDashboard(s);
+  if (stylingOn()) printDashboardFancy(s);
+  else printDashboard(s);
   return 0;
 }

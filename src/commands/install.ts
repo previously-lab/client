@@ -5,9 +5,10 @@ import { findOnPath } from '../lib/detect.js';
 import { diffLines } from '../lib/diff.js';
 import { resolvePaths } from '../lib/paths.js';
 import { applySkillTarget, type SkillApplyResult } from '../lib/skills.js';
+import { bold, emph, err as errText, green, muted, styleDiff, styleHelp, yellow } from '../lib/ansi.js';
 
 function usage(mode: 'install' | 'uninstall'): void {
-  console.log(`previously ${mode} — ${mode === 'install' ? 'write' : 'remove'} the "Previously" skill group ${
+  console.log(styleHelp(`previously ${mode} — ${mode === 'install' ? 'write' : 'remove'} the "Previously" skill group ${
     mode === 'install' ? 'for' : 'from'
   } local agent CLIs
 
@@ -30,7 +31,7 @@ skill dir from older versions is migrated away automatically.
 Note: the read-only MCP server (previously mcp) is retired — this skill pack
 replaces it. Bridged agents also get the memory protocol per call via the
 bridge-exec temp workspace (CLAUDE.md / AGENTS.md), no install needed.
-`);
+`));
 }
 
 /** Dependency seams so tests never touch the real PATH or home. */
@@ -82,21 +83,21 @@ function report(results: SkillApplyResult[], dryRun: boolean): void {
   for (const r of results) {
     const verb =
       r.action === 'unchanged'
-        ? 'unchanged'
+        ? muted('unchanged')
         : dryRun
           ? r.action === 'installed'
-            ? 'would install into'
-            : 'would remove from'
+            ? green('would install into')
+            : yellow('would remove from')
           : r.action === 'installed'
-            ? 'installed into'
-            : 'removed from';
-    console.log(`[${r.target}] ${verb} ${r.path}`);
-    if (r.backupPath !== null) console.log(`  backup: ${r.backupPath}`);
+            ? green('installed into')
+            : yellow('removed from');
+    console.log(`[${bold(r.target)}] ${verb} ${emph(r.path)}`);
+    if (r.backupPath !== null) console.log(`  backup: ${muted(r.backupPath)}`);
     if (dryRun && r.action !== 'unchanged') {
-      console.log(diffLines(r.oldContent ?? '', r.newContent));
+      console.log(styleDiff(diffLines(r.oldContent ?? '', r.newContent)));
     }
   }
-  if (dryRun) console.log('(dry run — nothing written)');
+  if (dryRun) console.log(muted('(dry run — nothing written)'));
 }
 
 async function runMode(args: string[], mode: 'install' | 'uninstall', deps: InstallDeps = {}): Promise<number> {
@@ -109,7 +110,7 @@ async function runMode(args: string[], mode: 'install' | 'uninstall', deps: Inst
   try {
     flags = parseFlags(args);
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(errText(err instanceof Error ? err.message : String(err)));
     usage(mode);
     return 1;
   }
@@ -117,8 +118,8 @@ async function runMode(args: string[], mode: 'install' | 'uninstall', deps: Inst
   const memoryRoot = deps.memoryRoot ?? loadConfig(resolvePaths()).memoryRoot;
   const targets = selectTargets(flags, deps);
   if (targets.length === 0) {
-    console.log('No agent CLIs detected on PATH (claude / codex / kimi).');
-    console.log('Pass --claude / --codex / --kimi / --all to install anyway.');
+    console.log(muted('No agent CLIs detected on PATH (claude / codex / kimi).'));
+    console.log(`Pass ${bold('--claude / --codex / --kimi / --all')} to install anyway.`);
     return 0;
   }
 
@@ -133,7 +134,7 @@ async function runMode(args: string[], mode: 'install' | 'uninstall', deps: Inst
         }),
       );
     } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
+      console.error(errText(err instanceof Error ? err.message : String(err)));
       return 1;
     }
   }

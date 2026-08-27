@@ -1,9 +1,11 @@
 import { mkdirSync } from 'node:fs';
+import { basename } from 'node:path';
 import { loadConfig } from '../lib/config.js';
+import { parseMsEnv } from '../lib/env.js';
 import { resolvePaths, type PreviouslyPaths } from '../lib/paths.js';
-import { isProcessAlive, readPidFile, removePidFile, writePidFile } from '../lib/process.js';
+import { checkPidFile, readPidFile, removePidFile, writePidFile } from '../lib/process.js';
+import { bold, emph, err as errText, muted, ok, red, warn } from '../lib/ansi.js';
 import { CursorStore } from '../scribe/cursor.js';
-import { recordError } from '../scribe/status.js';
 import { SCRIBE_SOURCES, type ScribeRoots, type ScribeSource } from '../scribe/types.js';
 import { resolveScribeRoots, ScribeEngine, ScribeWatcher } from '../scribe/watcher.js';
 
@@ -39,9 +41,10 @@ function formatSourceLine(source: ScribeSource, s: {
   rootPresent: boolean; root: string; filesSeen: number; filesProcessed: number;
   events: number; parseErrors: number; lastEventAt: string | null;
 }): string {
-  if (!s.rootPresent) return `  ${source}: root absent (${s.root})`;
+  if (!s.rootPresent) return `  ${bold(source)}: ${warn(`root absent (${s.root})`)}`;
   const last = s.lastEventAt ?? '—';
-  return `  ${source}: ${s.filesProcessed}/${s.filesSeen} files, ${s.events} events, ${s.parseErrors} parse errors, last event ${last}`;
+  const parseErrors = s.parseErrors > 0 ? red(String(s.parseErrors)) : String(s.parseErrors);
+  return `  ${bold(source)}: ${s.filesProcessed}/${s.filesSeen} files, ${s.events} events, ${parseErrors} parse errors, last event ${last}`;
 }
 
 /**
@@ -52,14 +55,14 @@ function formatSourceLine(source: ScribeSource, s: {
 export async function runScribe(args: string[], opts: ScribeCommandOptions = {}): Promise<number> {
   const [sub, ...rest] = args;
   if (sub !== 'once') {
-    console.error(`Usage: previously scribe once [--source ${SCRIBE_SOURCES.join('|')}]`);
+    console.error(errText(`Usage: previously scribe once [--source ${SCRIBE_SOURCES.join('|')}]`));
     return 2;
   }
   let source: ScribeSource | undefined;
   try {
     source = parseSourceArg(rest);
   } catch (err) {
-    console.error(err instanceof Error ? err.message : err);
+    console.error(errText(err instanceof Error ? err.message : String(err)));
     return 2;
   }
 
@@ -72,9 +75,9 @@ export async function runScribe(args: string[], opts: ScribeCommandOptions = {})
     console.log(formatSourceLine(s, summary.sources[s]));
   }
   for (const err of summary.errors) {
-    console.error(`  error: ${err.file}: ${err.message}`);
+    console.error(errText(`  error: ${err.file}: ${err.message}`));
   }
-  console.log(`Memory root: ${loadConfig(paths).memoryRoot}`);
+  console.log(`${bold('Memory root:')} ${emph(loadConfig(paths).memoryRoot)}`);
   return 0;
 }
 
@@ -97,8 +100,9 @@ export async function runWatch(args: string[], opts: WatchOptions = {}): Promise
   // Note: when `previously start` spawns us detached, it writes OUR pid into
   // the pid file — seeing our own pid there is the normal case, not a clash.
   if (existingPid !== null && existingPid !== process.pid) {
-    if (isProcessAlive(existingPid)) {
-      console.error(`Scribe is already running (pid ${existingPid}).`);
+    const existing = checkPidFile(paths.scribePidPath);
+    if (existing.status === 'running') {
+      console.error(errText(`Scribe is already running (pid ${existing.pid}).`));
       return 1;
     }
     removePidFile(paths.scribePidPath);
@@ -113,20 +117,21 @@ export async function runWatch(args: string[], opts: WatchOptions = {}): Promise
   // the scribe status file and the scribe log (stdout in detached mode) —
   // instead of crashing the watcher or vanishing silently.
   process.on('unhandledRejection', (reason) => {
-    recordError(engine.getStatus(), '(unhandledRejection)', reason);
-    engine.writeStatus();
-    console.error(`unhandled rejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`);
+    engine.recordErrorSafe('(unhandledRejection)', reason);
+    console.error(errText(`unhandled rejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`));
   });
 
   mkdirSync(paths.logsDir, { recursive: true });
-  writePidFile(paths.scribePidPath, process.pid);
+  // Carry the identity marker (see process.ts checkPidFile) only when this is
+  // a real CLI process; in-process test callers keep the legacy bare pid.
+  const marker = process.argv[1]?.endsWith('cli.js') ? `${basename(process.argv[1])} watch` : undefined;
+  writePidFile(paths.scribePidPath, process.pid, marker);
 
-  const rescanMs = opts.rescanMs ?? Number(process.env.PREVIOUSLY_SCRIBE_RESCAN_MS ?? 300_000);
+  const rescanMs = opts.rescanMs ?? parseMsEnv('PREVIOUSLY_SCRIBE_RESCAN_MS', 300_000);
   const timer = setInterval(() => {
     watcher.rescan().catch((err) => {
-      recordError(engine.getStatus(), '(rescan)', err);
-      engine.writeStatus();
-      console.error(`rescan failed: ${err instanceof Error ? err.message : err}`);
+      engine.recordErrorSafe('(rescan)', err);
+      console.error(errText(`rescan failed: ${err instanceof Error ? err.message : err}`));
     });
   }, rescanMs);
   timer.unref();
@@ -140,7 +145,7 @@ export async function runWatch(args: string[], opts: WatchOptions = {}): Promise
     shutdown()
       .then(() => process.exit(0))
       .catch((err: unknown) => {
-        console.error(`shutdown failed: ${err instanceof Error ? err.message : err}`);
+        console.error(errText(`shutdown failed: ${err instanceof Error ? err.message : err}`));
         process.exit(1);
       });
   };
@@ -149,10 +154,11 @@ export async function runWatch(args: string[], opts: WatchOptions = {}): Promise
 
   await watcher.start();
   await engine.drain();
+  await engine.commitBatch();
 
   for (const source of SCRIBE_SOURCES) {
     console.log(formatSourceLine(source, engine.getStatus().sources[source]));
   }
-  console.log(`Scribe watching (pid ${process.pid}). Status: ${paths.scribeStatusPath}`);
+  console.log(ok(`Scribe watching (pid ${process.pid}).`) + ` ${muted('Status:')} ${emph(paths.scribeStatusPath)}`);
   return 0;
 }

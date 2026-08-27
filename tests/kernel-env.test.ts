@@ -3,7 +3,13 @@ import { defaultConfig, type PreviouslyConfig } from '../src/lib/config.js';
 import { buildKernelEnv } from '../src/lib/kernel-env.js';
 import type { PreviouslyPaths } from '../src/lib/paths.js';
 
-const paths = { home: '/home/x/.previously' } as PreviouslyPaths;
+const paths = {
+  home: '/home/x/.previously',
+  tasksDir: '/home/x/.previously/tasks',
+  sessionsDir: '/home/x/.previously/sessions',
+  workflowDataDir: '/home/x/.previously/.workflow-data',
+  skillsDir: '/home/x/.previously/skills',
+} as PreviouslyPaths;
 
 function config(overrides: Partial<PreviouslyConfig> = {}): PreviouslyConfig {
   return {
@@ -31,6 +37,16 @@ describe('buildKernelEnv (start env contract)', () => {
     expect(env.PREVIOUSLY_BRAIN).toBeUndefined();
     expect(env.PREVIOUSLY_BRAIN_AGENT).toBeUndefined();
     expect(env.PREVIOUSLY_DEFAULT_MODEL).toBeUndefined();
+  });
+
+  it('roots kernel data dirs under PREVIOUSLY_HOME, outside the kernel dir', () => {
+    const env = buildKernelEnv(config(), paths, {});
+    expect(env).toMatchObject({
+      TASKS_ROOT: '/home/x/.previously/tasks',
+      SESSIONS_ROOT: '/home/x/.previously/sessions',
+      WORKFLOW_LOCAL_DATA_DIR: '/home/x/.previously/.workflow-data',
+      PREVIOUSLY_SKILLS_DIR: '/home/x/.previously/skills',
+    });
   });
 
   it('injects PREVIOUSLY_BRIDGE_CMD as the registered command name', () => {

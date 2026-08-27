@@ -7,6 +7,7 @@ import {
   readdirSync,
   rmSync,
   rmdirSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -609,6 +610,33 @@ export interface BridgeWorkspaceOptions {
    * global shim. The parameter exists for tests.
    */
   previouslyCmd?: string;
+}
+
+/**
+ * Remove `previously-bridge-*` temp workspaces older than maxAgeMs. The
+ * per-call finally cleanup cannot run when the process is hard-killed (on
+ * Windows SIGTERM is TerminateProcess — no handler ever fires), so residue
+ * accumulates; sweep it at the start of the next call instead. Best-effort:
+ * a locked or disappearing dir is skipped, never fatal.
+ */
+export function sweepStaleBridgeWorkspaces(maxAgeMs = 24 * 60 * 60 * 1000): void {
+  let entries;
+  try {
+    entries = readdirSync(tmpdir(), { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('previously-bridge-')) continue;
+    try {
+      const dir = join(tmpdir(), entry.name);
+      if (Date.now() - statSync(dir).mtimeMs > maxAgeMs) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    } catch {
+      // best-effort — next sweep gets it
+    }
+  }
 }
 
 /**

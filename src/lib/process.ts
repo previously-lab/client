@@ -20,8 +20,14 @@ export function readPidFile(pidPath: string): number | null {
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
-export function writePidFile(pidPath: string, pid: number): void {
-  writeFileSync(pidPath, String(pid) + '\n', 'utf8');
+/**
+ * Write a pid file. `marker` (a substring of the managed process's command
+ * line, e.g. the kernel's server.js path) is stored on a second line so
+ * later checks can tell our process apart from a reused pid — see
+ * checkPidFile.
+ */
+export function writePidFile(pidPath: string, pid: number, marker?: string): void {
+  writeFileSync(pidPath, marker ? `${pid}\n${marker}\n` : `${pid}\n`, 'utf8');
 }
 
 export function removePidFile(pidPath: string): void {
@@ -36,6 +42,72 @@ export function isProcessAlive(pid: number): boolean {
     // EPERM: the process exists but belongs to another user — treat as alive.
     return (err as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+/**
+ * Best-effort command line of a live process; null when it cannot be
+ * determined (query failed, unsupported platform). Windows pays one
+ * PowerShell CIM query per call — keep this off hot paths.
+ */
+export function processCommandLine(pid: number): string | null {
+  try {
+    if (process.platform === 'win32') {
+      const res = spawnSync(
+        'powershell',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
+        ],
+        { encoding: 'utf8', windowsHide: true, timeout: 10_000 },
+      );
+      if (res.error || res.status !== 0) return null;
+      const line = (res.stdout ?? '').trim();
+      return line.length > 0 ? line : null;
+    }
+    const res = spawnSync('ps', ['-p', String(pid), '-o', 'args='], {
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+    if (res.error || res.status !== 0) return null;
+    const line = (res.stdout ?? '').trim();
+    return line.length > 0 ? line : null;
+  } catch {
+    return null;
+  }
+}
+
+export type PidFileStatus = 'none' | 'stale' | 'foreign' | 'running';
+
+/**
+ * Liveness PLUS identity for a managed pid file. Pid files survive crashes
+ * and Windows reuses pids aggressively, so a live pid alone does not prove
+ * the process is ours — `previously stop` must never taskkill a stranger.
+ *
+ * New-style pid files carry a second line: a marker substring of the
+ * expected command line (the kernel's server.js path, `<entry> watch` for
+ * the scribe), written at spawn time. Legacy bare pid files fall back to
+ * alive-only — the pre-marker behavior. When the live command line cannot
+ * be read we conservatively answer 'running': refusing to start (or killing
+ * the wrong process) is worse than a stale claim.
+ */
+export function checkPidFile(pidPath: string): { status: PidFileStatus; pid: number | null } {
+  const pid = readPidFile(pidPath);
+  if (pid === null) return { status: 'none', pid: null };
+  if (!isProcessAlive(pid)) return { status: 'stale', pid };
+  const marker = readPidMarker(pidPath);
+  if (marker === null) return { status: 'running', pid };
+  const cmdline = processCommandLine(pid);
+  if (cmdline === null) return { status: 'running', pid };
+  return { status: cmdline.includes(marker) ? 'running' : 'foreign', pid };
+}
+
+/** The identity marker line of a pid file, or null for legacy bare files. */
+export function readPidMarker(pidPath: string): string | null {
+  if (!existsSync(pidPath)) return null;
+  const second = readFileSync(pidPath, 'utf8').split('\n')[1]?.trim();
+  return second ? second : null;
 }
 
 /** Resolve true once the process is gone; false if still alive after timeoutMs. */

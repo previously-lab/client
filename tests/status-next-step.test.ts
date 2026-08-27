@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { run as status } from '../src/commands/status.js';
+import { ensureMemoryRepo } from '../src/lib/memory-repo.js';
 import { collectStatus, nextStepSuggestion } from '../src/lib/system-status.js';
 import { resolvePaths } from '../src/lib/paths.js';
 import { writePidFile } from '../src/lib/process.js';
@@ -62,5 +63,30 @@ describe('status next-step suggestion', () => {
     expect(await status([])).toBe(1);
     const nextLine = stdout.find((l) => l.startsWith('Next:'));
     expect(nextLine).toContain('run `previously start` to start the kernel');
+  });
+
+  it('status shows the memory repo line (branch, changes, last commit)', async () => {
+    home = useTempHome();
+    writeConfigWithPort(await getFreePort());
+    const paths = resolvePaths();
+    await ensureMemoryRepo(paths.memoryDir);
+    stdout = [];
+    vi.spyOn(console, 'log').mockImplementation((m) => stdout.push(String(m)));
+    expect(await status([])).toBe(1); // kernel down — but the panel renders
+    const line = stdout.flatMap((l) => l.split('\n')).find((l) => l.startsWith('Memory repo:'));
+    expect(line).toContain('main');
+    expect(line).toContain('clean');
+    expect(line).toContain('last commit');
+  });
+
+  it('status says "not a git repository" (with an init hint) when the memory root has no .git', async () => {
+    home = useTempHome();
+    writeConfigWithPort(await getFreePort());
+    stdout = [];
+    vi.spyOn(console, 'log').mockImplementation((m) => stdout.push(String(m)));
+    expect(await status([])).toBe(1);
+    const line = stdout.flatMap((l) => l.split('\n')).find((l) => l.startsWith('Memory repo:'));
+    expect(line).toContain('not a git repository');
+    expect(line).toContain('previously init');
   });
 });

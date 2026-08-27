@@ -4,3 +4,5 @@ coverage/
 *.log
 .DS_Store
 dev.env
+# Local release-verification scratch (tarballs, scratch PREVIOUSLY_HOMEs)
+.e2e/

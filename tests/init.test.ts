@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { run as init } from '../src/commands/init.js';
 import { defaultConfig, saveConfig } from '../src/lib/config.js';
 import { admitSlice, countScribeSlices, type SubmittedSlice } from '../src/lib/ingest.js';
+import { commitAll, ensureMemoryRepo, repoSummary } from '../src/lib/memory-repo.js';
 import { resolvePaths } from '../src/lib/paths.js';
 import type { PromptIO } from '../src/lib/prompt.js';
 import type { ScribeRoots } from '../src/scribe/types.js';
@@ -35,7 +36,7 @@ describe('init', () => {
     home = useTempHome();
     expect(await init([], { roots: emptyRoots(home) })).toBe(0);
     const paths = resolvePaths();
-    for (const dir of [paths.home, paths.memoryDir, paths.kernelDir, paths.logsDir]) {
+    for (const dir of [paths.home, paths.memoryDir, paths.kernelDir, paths.logsDir, paths.skillsDir]) {
       expect(existsSync(dir), dir).toBe(true);
     }
     const config = JSON.parse(readFileSync(paths.configPath, 'utf8'));
@@ -73,6 +74,21 @@ describe('init', () => {
     expect(await init(['--force'], { roots: emptyRoots(home) })).toBe(0);
     const after = JSON.parse(readFileSync(paths.configPath, 'utf8'));
     expect(after.port).toBe(3210);
+  });
+
+  it('--force backs up the existing config (apiKeys, tuning) before wiping it', async () => {
+    home = useTempHome();
+    expect(await init([], { roots: emptyRoots(home) })).toBe(0);
+    const paths = resolvePaths();
+    const original = { port: 9999, apiKeys: { DEEPSEEK_API_KEY: 'sk-user-tuned' } };
+    writeFileSync(paths.configPath, JSON.stringify(original), 'utf8');
+
+    expect(await init(['--force'], { roots: emptyRoots(home) })).toBe(0);
+    const backup = JSON.parse(readFileSync(`${paths.configPath}.bak`, 'utf8'));
+    expect(backup.apiKeys).toEqual(original.apiKeys);
+    expect(backup.port).toBe(9999);
+    const after = JSON.parse(readFileSync(paths.configPath, 'utf8'));
+    expect(after.apiKeys).toBeUndefined();
   });
 
   it('--backend sets executionBackend non-interactively', async () => {
@@ -522,8 +538,69 @@ describe('init config doctor (non-interactive)', () => {
 
   it('a healthy existing config produces no repair output', async () => {
     writeFileSync(resolvePaths().configPath, JSON.stringify(defaultConfig(resolvePaths())), 'utf8');
+    // A healthy install also has its memory repo in place — otherwise the
+    // doctor legitimately repairs (recreates) it, which this test excludes.
+    await ensureMemoryRepo(defaultConfig(resolvePaths()).memoryRoot);
     const roots = makeFakeAgentHome(join(home, 'fakehome'));
     expect(await init([], { roots })).toBe(0);
     expect(stdout.join('\n')).not.toContain('repaired:');
+  });
+});
+
+describe('init memory repository', () => {
+  let home: string;
+  beforeEach(() => {
+    home = useTempHome();
+    captureConsole();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    cleanupTempHome(home);
+  });
+
+  /** Empty fake roots: keeps the history import a fast no-op. */
+  const emptyRoots = (): ScribeRoots => makeFakeAgentHome(join(home, 'fakehome'));
+
+  it('creates a git repository (README + first commit) at the default memory root', async () => {
+    expect(await init([], { roots: emptyRoots() })).toBe(0);
+    const memoryRoot = join(home, 'memory'); // PREVIOUSLY_HOME sandbox default
+    expect(existsSync(join(memoryRoot, '.git'))).toBe(true);
+    expect(existsSync(join(memoryRoot, 'README.md'))).toBe(true);
+    const summary = await repoSummary(memoryRoot);
+    expect(summary?.branch).toBe('main');
+    expect(summary?.lastCommitAt).not.toBeNull();
+    // The empty default memory dir (pre-created by the layout step) is
+    // initialized via the doctor's memory audit.
+    expect(stdout.join('\n')).toContain('recreated as a git repository');
+  });
+
+  it('relink: re-running init with --memory-root adopts an existing Previously repo (the GitHub clone-back path)', async () => {
+    expect(await init([], { roots: emptyRoots() })).toBe(0);
+
+    // A memory repo the user cloned back from their private GitHub remote.
+    const clone = join(home, 'cloned-back');
+    await ensureMemoryRepo(clone);
+    mkdirSync(join(clone, 'episodic'), { recursive: true });
+    writeFileSync(join(clone, 'episodic', 'timeline.md'), '# Timeline\n', 'utf8');
+    await commitAll(clone, 'Previously content');
+
+    expect(await init(['--memory-root', clone], { roots: emptyRoots() })).toBe(0);
+    const config = JSON.parse(readFileSync(resolvePaths().configPath, 'utf8'));
+    expect(config.memoryRoot).toBe(clone);
+    expect(stdout.join('\n')).toContain('Adopted the existing Previously memory repository');
+    // Data untouched: the committed content is still there, tree still clean.
+    expect(readFileSync(join(clone, 'episodic', 'timeline.md'), 'utf8')).toBe('# Timeline\n');
+    expect((await repoSummary(clone))?.uncommitted).toBe(0);
+  });
+
+  it('refuses a foreign non-empty non-git --memory-root: exit 1, nothing initialized over it', async () => {
+    const foreign = join(home, 'foreign');
+    mkdirSync(foreign, { recursive: true });
+    writeFileSync(join(foreign, 'precious.txt'), 'do not touch\n', 'utf8');
+
+    expect(await init(['--memory-root', foreign], { roots: emptyRoots() })).toBe(1);
+    expect(stderr.join('\n')).toContain('refusing to initialize a repository over it');
+    expect(stderr.join('\n')).toContain('--memory-root');
+    expect(existsSync(join(foreign, '.git'))).toBe(false);
   });
 });

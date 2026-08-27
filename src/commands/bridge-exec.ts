@@ -15,7 +15,7 @@ import { createEventCollector } from '../bridge/events.js';
 import { loadConfig } from '../lib/config.js';
 import { resolvePaths } from '../lib/paths.js';
 import { renderPhaseSkillDoc } from '../lib/phase-skills.js';
-import { materializeBridgeWorkspace } from '../lib/skills.js';
+import { materializeBridgeWorkspace, sweepStaleBridgeWorkspaces } from '../lib/skills.js';
 
 /**
  * `previously bridge-exec` — the kernel-side half of the subscription bridge
@@ -194,6 +194,9 @@ export async function run(args: string[], opts: BridgeExecOptions = {}): Promise
   // `{{PREVIOUSLY_CMD}}` as the bare registered command name: the spawned
   // agent invokes reader commands through its own shell, which resolves the
   // global `previously` shim exactly like a user typing it would.
+  // Hard-killed predecessors (TerminateProcess runs no finally) leave their
+  // workspaces behind — sweep them before making our own.
+  sweepStaleBridgeWorkspaces();
   const workspace = materializeBridgeWorkspace(
     agent,
     memoryRoot,

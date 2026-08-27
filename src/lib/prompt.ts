@@ -1,4 +1,5 @@
 import { createInterface, type Interface } from 'node:readline/promises';
+import { bold, gray, yellow } from './ansi.js';
 
 /**
  * Minimal interactive-prompt seam for the init wizard. Zero dependencies —
@@ -7,6 +8,9 @@ import { createInterface, type Interface } from 'node:readline/promises';
  *
  * Rules this enforces: every question has a default (empty answer = default),
  * confirms accept y/n/yes/no in any case, and the interface is always closed.
+ *
+ * Questions are styled (bold question, gray default hint) only when the
+ * output supports color — off-TTY the text is exactly the plain form.
  */
 export interface PromptIO {
   /** Free-form question; returns the trimmed answer or the default. */
@@ -24,7 +28,7 @@ class ReadlinePromptIO implements PromptIO {
   }
 
   async ask(question: string, defaultValue: string): Promise<string> {
-    const answer = await this.rl.question(`${question} [${defaultValue}] `);
+    const answer = await this.rl.question(`${bold(question)} ${gray(`[${defaultValue}]`)} `);
     const trimmed = answer.trim();
     return trimmed === '' ? defaultValue : trimmed;
   }
@@ -32,11 +36,11 @@ class ReadlinePromptIO implements PromptIO {
   async confirm(question: string, defaultYes: boolean): Promise<boolean> {
     const hint = defaultYes ? 'Y/n' : 'y/N';
     for (;;) {
-      const answer = (await this.rl.question(`${question} [${hint}] `)).trim().toLowerCase();
+      const answer = (await this.rl.question(`${bold(question)} ${gray(`[${hint}]`)} `)).trim().toLowerCase();
       if (answer === '') return defaultYes;
       if (answer === 'y' || answer === 'yes') return true;
       if (answer === 'n' || answer === 'no') return false;
-      console.log('Please answer y or n.');
+      console.log(yellow('Please answer y or n.'));
     }
   }
 

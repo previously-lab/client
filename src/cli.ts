@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
+import { banner, err as errText, styleHelp, stylingOn } from './lib/ansi.js';
 import * as agentlog from './commands/agentlog.js';
 import * as bridgeExec from './commands/bridge-exec.js';
 import * as card from './commands/card.js';
@@ -43,8 +44,7 @@ const commands: Record<string, CommandHandler> = {
   agentlog: agentlog.run,
 };
 
-function usage(): void {
-  console.log(`previously — local client for the Previously kernel
+const USAGE_TEXT = `previously — local client for the Previously kernel
 
 Usage: previously [command]
 
@@ -82,7 +82,18 @@ Advanced:
 Environment:
   PREVIOUSLY_HOME     Root for all state (default: ~/.previously)
   PREVIOUSLY_NO_OPEN  Set to 1 to never auto-open the browser
-`);
+`;
+
+function usage(): void {
+  if (stylingOn()) {
+    // TTY: brand banner up top, styled help body below (title line moved
+    // into the banner so it isn't printed twice).
+    for (const line of banner('Previously', 'local client for the Previously kernel')) console.log(line);
+    console.log('');
+    console.log(styleHelp(USAGE_TEXT.slice(USAGE_TEXT.indexOf('\n') + 2)));
+    return;
+  }
+  console.log(styleHelp(USAGE_TEXT));
 }
 
 function version(): string {
@@ -111,7 +122,7 @@ async function main(): Promise<number> {
 
   const handler = commands[command];
   if (!handler) {
-    console.error(`Unknown command: ${command}`);
+    console.error(errText(`Unknown command: ${command}`));
     usage();
     return 1;
   }
@@ -123,6 +134,6 @@ main()
     process.exitCode = code;
   })
   .catch((err: unknown) => {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(errText(err instanceof Error ? err.message : String(err)));
     process.exitCode = 1;
   });

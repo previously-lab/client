@@ -13,6 +13,10 @@ describe('paths', () => {
     const paths = resolvePaths();
     expect(paths.home).toBe(home);
     expect(paths.memoryDir).toBe(join(home, 'memory'));
+    expect(paths.tasksDir).toBe(join(home, 'tasks'));
+    expect(paths.sessionsDir).toBe(join(home, 'sessions'));
+    expect(paths.workflowDataDir).toBe(join(home, '.workflow-data'));
+    expect(paths.skillsDir).toBe(join(home, 'skills'));
     expect(paths.kernelDir).toBe(join(home, 'kernel'));
     expect(paths.logsDir).toBe(join(home, 'logs'));
     expect(paths.configPath).toBe(join(home, 'config.json'));

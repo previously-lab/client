@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,6 +12,14 @@ import { join } from 'node:path';
 export interface PreviouslyPaths {
   home: string;
   memoryDir: string;
+  /** Kernel task data root (TASKS_ROOT) — outside the versioned kernel dir. */
+  tasksDir: string;
+  /** Kernel session data root (SESSIONS_ROOT) — outside the versioned kernel dir. */
+  sessionsDir: string;
+  /** Workflow Local World data root (WORKFLOW_LOCAL_DATA_DIR). */
+  workflowDataDir: string;
+  /** Extra skills discovery dir (PREVIOUSLY_SKILLS_DIR). */
+  skillsDir: string;
   kernelDir: string;
   /** Versioned kernel installs live here: <kernelVersionsDir>/<version>/ */
   kernelVersionsDir: string;
@@ -37,6 +46,10 @@ export function resolvePaths(): PreviouslyPaths {
   return {
     home,
     memoryDir: join(home, 'memory'),
+    tasksDir: join(home, 'tasks'),
+    sessionsDir: join(home, 'sessions'),
+    workflowDataDir: join(home, '.workflow-data'),
+    skillsDir: join(home, 'skills'),
     kernelDir,
     kernelVersionsDir: join(kernelDir, 'versions'),
     kernelCurrentPath: join(kernelDir, 'current.json'),
@@ -52,4 +65,20 @@ export function resolvePaths(): PreviouslyPaths {
     scribePidPath: join(home, 'scribe.pid'),
     scribeLogPath: join(home, 'logs', 'scribe.log'),
   };
+}
+
+/**
+ * The default location of the memory git repository, following platform
+ * conventions: `<Documents>/Previously` when the user's Documents folder
+ * exists, otherwise `<home>/Previously`. Never a hidden/cache directory.
+ *
+ * Under PREVIOUSLY_HOME (tests, sandboxed runs) the default stays inside the
+ * sandbox as `<PREVIOUSLY_HOME>/memory` — the seam mirrors resolvePaths, and
+ * `homeDir` is injectable for tests of the platform rule itself.
+ */
+export function defaultMemoryRepo(homeDir: string = homedir()): string {
+  const sandbox = process.env.PREVIOUSLY_HOME;
+  if (sandbox !== undefined) return join(sandbox, 'memory');
+  const documents = join(homeDir, 'Documents');
+  return join(existsSync(documents) ? documents : homeDir, 'Previously');
 }

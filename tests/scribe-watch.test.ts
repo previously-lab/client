@@ -123,4 +123,45 @@ describe('scribe watcher', () => {
     expect(engine.getStatus().errors).toEqual([]);
     expect(readFileSync(core, 'utf8')).toContain('第一条 gemini 消息');
   }, 30_000);
+
+  it('a failing status write inside enqueue does not poison the queue or warn', async () => {
+    const engine = setup();
+    const rejectionEvents: string[] = [];
+    const onUnhandled = (): void => { rejectionEvents.push('unhandledRejection'); };
+    const onHandled = (): void => { rejectionEvents.push('rejectionHandled'); };
+    process.on('unhandledRejection', onUnhandled);
+    process.on('rejectionHandled', onHandled);
+    const consoleErrors: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((msg) => consoleErrors.push(String(msg)));
+    try {
+      // processFile fails, and the error-recording status write fails too
+      // (disk full / antivirus lock) — the secondary failure must be absorbed.
+      vi.spyOn(engine, 'processFile').mockRejectedValueOnce(new Error('parse boom'));
+      vi.spyOn(engine, 'writeStatus').mockImplementationOnce(() => { throw new Error('disk full'); });
+
+      engine.enqueue(join(roots['claude-code'], 'sess-boom.jsonl'), 'claude-code');
+      await engine.drain();
+
+      // The original error was still recorded; the secondary writeStatus
+      // failure fell back to stderr instead of rejecting the queued promise.
+      expect(engine.getStatus().errors.map((e) => e.message)).toContain('parse boom');
+      expect(consoleErrors.join('\n')).toContain('disk full');
+
+      // The queue keeps working after the secondary failure.
+      const file = writeClaudeSession(roots, 'sess-after', [
+        claudeUserLine('队列仍然可用', '2026-08-10T14:01:00.000Z', 'sess-after'),
+      ]);
+      engine.enqueue(file, 'claude-code');
+      await engine.drain();
+      expect(engine.getStatus().sources['claude-code'].events).toBe(1);
+
+      // No unhandled-then-handled rejection (Node's
+      // PromiseRejectionHandledWarning) at any point.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(rejectionEvents).toEqual([]);
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandled);
+      process.removeListener('rejectionHandled', onHandled);
+    }
+  });
 });

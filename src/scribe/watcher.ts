@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, extname, join, relative } from 'node:path';
 import { watch, type FSWatcher } from 'chokidar';
 import { writeFileAtomic } from '../lib/atomic.js';
+import { commitAll } from '../lib/memory-repo.js';
 import { chainHash, CursorStore, EMPTY_HASH, type FileCursor } from './cursor.js';
 import { CLAUDE_CODE_PARSER_VERSION, parseClaudeCodeLine } from './parsers/claude-code.js';
 import { CODEX_PARSER_VERSION, parseCodexLine } from './parsers/codex.js';
@@ -148,6 +149,9 @@ export class ScribeEngine {
   private readonly status: ScribeStatus;
   /** Serializes processing per file so rapid watch events never interleave. */
   private readonly queues = new Map<string, Promise<unknown>>();
+  /** Slices written since the last commitBatch() — the git commit unit. */
+  private readonly batchSlices = new Set<string>();
+  private readonly batchSources = new Set<ScribeSource>();
 
   constructor(opts: ScribeEngineOptions) {
     this.memoryRoot = opts.memoryRoot;
@@ -348,6 +352,8 @@ export class ScribeEngine {
     }
     if (state.sliceId !== null && newEvents + newParseErrors > 0) {
       writeSessionSlice(this.memoryRoot, state, this.timezone);
+      this.batchSlices.add(state.sliceId);
+      this.batchSources.add(source);
     }
 
     const status = this.sourceStatus(source);
@@ -422,7 +428,11 @@ export class ScribeEngine {
     });
     this.cursors.save();
     this.saveSessionState(filePath, state);
-    if (state.sliceId !== null) writeSessionSlice(this.memoryRoot, state, this.timezone);
+    if (state.sliceId !== null) {
+      writeSessionSlice(this.memoryRoot, state, this.timezone);
+      this.batchSlices.add(state.sliceId);
+      this.batchSources.add(source);
+    }
 
     const status = this.sourceStatus(source);
     status.events += newEvents;
@@ -446,8 +456,7 @@ export class ScribeEngine {
         try {
           await this.processFile(filePath, source);
         } catch (err) {
-          recordError(this.status, filePath, err);
-          this.writeStatus();
+          this.recordErrorSafe(filePath, err);
         }
       });
     this.queues.set(filePath, next);
@@ -497,11 +506,46 @@ export class ScribeEngine {
       }
     }
     this.writeStatus();
+    await this.commitBatch();
     return { sources: this.status.sources, errors };
+  }
+
+  /**
+   * Commit the slices written since the last batch into the memory repo
+   * (when the memory root is one). A no-op when nothing was written;
+   * commit failures warn and never throw — transcription is the primary
+   * duty, git is bookkeeping.
+   */
+  async commitBatch(): Promise<boolean> {
+    if (this.batchSlices.size === 0) return true;
+    const slices = this.batchSlices.size;
+    const sources = [...this.batchSources].sort().join(', ');
+    this.batchSlices.clear();
+    this.batchSources.clear();
+    return commitAll(this.memoryRoot, `Scribe: ${slices} slice(s) from ${sources}`);
   }
 
   writeStatus(): void {
     writeScribeStatus(this.statusPath, this.status);
+  }
+
+  /**
+   * recordError + writeStatus as a best-effort pair: the status write touches
+   * the disk and can itself fail (disk full, antivirus holding the file).
+   * Inside enqueue()'s promise chain such a secondary throw would leave a
+   * handler-less rejected promise in the queue map, and Node reports a
+   * PromiseRejectionHandledWarning when a later enqueue/drain attaches a
+   * handler. Fall back to stderr; the watcher keeps working.
+   */
+  recordErrorSafe(file: string, err: unknown): void {
+    try {
+      recordError(this.status, file, err);
+      this.writeStatus();
+    } catch (secondary) {
+      console.error(
+        `scribe: failed to record error for ${file}: ${secondary instanceof Error ? secondary.message : String(secondary)}`,
+      );
+    }
   }
 
   getStatus(): ScribeStatus {
@@ -569,8 +613,7 @@ export class ScribeWatcher {
       this.watcher.on('change', (path) => this.onFile(path));
       this.watcher.on('unlink', (path) => this.engine.handleUnlink(path));
       this.watcher.on('error', (err) => {
-        recordError(this.engine.getStatus(), '(watcher)', err);
-        this.engine.writeStatus();
+        this.engine.recordErrorSafe('(watcher)', err);
       });
       // An error before `ready` (e.g. a root ejected mid-attach) must not hang
       // start() forever — the error is already recorded in status; move on.
@@ -603,6 +646,7 @@ export class ScribeWatcher {
       }
     }
     await this.engine.drain();
+    await this.engine.commitBatch();
     this.engine.writeStatus();
   }
 
@@ -610,6 +654,7 @@ export class ScribeWatcher {
     await this.watcher?.close();
     this.watcher = null;
     await this.engine.drain();
+    await this.engine.commitBatch();
     this.engine.writeStatus();
   }
 }

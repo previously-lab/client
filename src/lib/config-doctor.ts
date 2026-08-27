@@ -1,6 +1,8 @@
-import { copyFileSync, existsSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { BRIDGE_AGENTS } from '../bridge/types.js';
 import { DEFAULT_HOSTNAME, DEFAULT_PORT, defaultConfig, saveConfig, type PreviouslyConfig } from './config.js';
+import { ensureMemoryRepo, initializeRepo } from './memory-repo.js';
 import { resolvePaths, type PreviouslyPaths } from './paths.js';
 
 /**
@@ -75,7 +77,10 @@ export function repairConfig(raw: PreviouslyConfig, paths: PreviouslyPaths): Con
     repairs.push('brain is malformed — removed (re-derive from backend below when possible)');
     delete config.brain;
   }
-  if (config.brain === undefined && config.executionBackend !== null && isBridgeAgent(config.executionBackend)) {
+  // …but NOT when a byok section is present: the Web UI BYOK engine clears
+  // brain deliberately, and resurrecting a bridge brain here would silently
+  // flip the user's engine back to bridge on every `previously start`.
+  if (config.brain === undefined && config.byok === undefined && config.executionBackend !== null && isBridgeAgent(config.executionBackend)) {
     repairs.push(`brain missing while backend is "${config.executionBackend}" — set brain to bridge:${config.executionBackend}`);
     config.brain = { type: 'bridge', agent: config.executionBackend };
   }
@@ -128,8 +133,72 @@ export function auditConfig(paths: PreviouslyPaths = resolvePaths()): ConfigAudi
  */
 export function applyAudit(paths: PreviouslyPaths, audit: ConfigAudit): void {
   if (audit.repairs.length === 0) return;
-  if (existsSync(paths.configPath)) {
-    copyFileSync(paths.configPath, `${paths.configPath}.bak`);
+  const backupPath = `${paths.configPath}.bak`;
+  // Back up ONCE: a later repair must not clobber the original backup with
+  // an already-damaged intermediate config.
+  if (existsSync(paths.configPath) && !existsSync(backupPath)) {
+    copyFileSync(paths.configPath, backupPath);
   }
   saveConfig(audit.config, paths);
+}
+
+/**
+ * The memory-repo half of the doctor (the config audit above is pure JSON;
+ * this one looks at the disk). The memory root is supposed to be a git
+ * repository:
+ *
+ *   - missing / empty directory → recreated via ensureMemoryRepo (repair);
+ *   - Previously content (episodic/) but no .git → initialized in place and
+ *     the existing content committed (repair);
+ *   - an existing git repository → healthy, left alone (adoption, when the
+ *     user points init at a clone, is init's job);
+ *   - non-empty, non-git, nothing like Previously → WARNING ONLY, never
+ *     auto-touched.
+ */
+export interface MemoryRepoAudit {
+  /** Repairs that were applied on disk. */
+  repairs: string[];
+  /** Problems left for the user to resolve. */
+  warnings: string[];
+}
+
+export async function auditMemoryRepo(memoryRoot: string): Promise<MemoryRepoAudit> {
+  const repairs: string[] = [];
+  const warnings: string[] = [];
+
+  const stat = statSync(memoryRoot, { throwIfNoEntry: false });
+  if (stat === undefined || (stat.isDirectory() && readdirSync(memoryRoot).length === 0)) {
+    const result = await ensureMemoryRepo(memoryRoot);
+    if (result.ok) {
+      repairs.push(`memory root ${memoryRoot} was missing/empty — recreated as a git repository`);
+    } else {
+      warnings.push(`memory root ${memoryRoot} could not be initialized: ${result.reason}`);
+    }
+    return { repairs, warnings };
+  }
+  if (!stat.isDirectory()) {
+    warnings.push(`memory root ${memoryRoot} is not a directory — leaving it untouched; pick another memory root`);
+    return { repairs, warnings };
+  }
+
+  if (existsSync(join(memoryRoot, '.git'))) return { repairs, warnings };
+
+  if (existsSync(join(memoryRoot, 'episodic'))) {
+    try {
+      await initializeRepo(memoryRoot, 'Import existing Previously memory');
+      repairs.push(`memory root ${memoryRoot} had Previously content but no .git — initialized a git repository in place`);
+    } catch (err) {
+      warnings.push(
+        `memory root ${memoryRoot} has Previously content but no .git, and initializing it failed: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+    return { repairs, warnings };
+  }
+
+  warnings.push(
+    `memory root ${memoryRoot} is not empty and not a git repository, and does not look like Previously memory — ` +
+      'leaving it untouched; move its contents aside or pick another memory root',
+  );
+  return { repairs, warnings };
 }

@@ -19,6 +19,8 @@ pnpm build     # compile TypeScript to dist/
 pnpm test      # run the vitest suite
 ```
 
+> 临时措施（内核发布前）：`previously-kernel@0.9.0` 尚未发布到 npm，本仓库用 `pnpm-workspace.yaml` 的 `overrides` 把它解析到本地已构建的内核包（`link:../Aftrbrez/dist-kernel`，需要先把 agent 仓库的 standalone 产物构建到该目录）。内核发布后删除该 overrides 条目即可。
+
 Run the CLI from source (after `pnpm build`):
 
 ```bash
@@ -54,19 +56,23 @@ npm i -g previously-client   # 或 npx
 previously                   # 唯一需要记住的命令
 ```
 
+注：请用上面的 registry 安装。git-URL 安装（`npm i -g github:...`）会触发 `prepare` 构建钩子，要求本机装有 pnpm 和 typescript，不推荐。
+
 裸 `previously` 是前门：**未初始化时它就是初始化**——TTY 下进入引导式向导（记忆存放位置 → 执行后端（自动探测本机 agent CLI）→ 是否把本机已有 agent 历史转录成时间片 → 已有内容的保留/重建 → 可选的 token 消耗步骤，每一步都先估账、默认不执行）；非 TTY（CI/脚本/agent 调用）自动走非交互模式，用默认值一次跑通并打印每个决策。**已初始化时它显示状态面板**——kernel/scribe 是否在跑、Web UI 地址、如何停止、各源转录进度、常用命令速查与下一步建议；裸命令从不启动服务、从不打开浏览器，启动是 `previously start`，浏览器是 `previously open`。非 TTY 已初始化时输出完全等同 `previously status`，脚本可安全解析。
 
 `previously init` 与裸命令共用同一套初始化流程。agent/脚本用法：`previously init --non-interactive --backend <claude|codex|kimi> [--memory-root <path>] [--json]`；`--rebuild` 丢弃全部转录时间片并从原始日志重建（`--include-custom` 连外部提交内容一起清；内核自己的对话永不动），`--skip-ingest` 只建布局与配置。所有交互式提问都有对应 flag，永不阻塞。选 bridge 后端会顺带把 `brain` 写入 config（订阅模式，无需 API key）。**每次 init 都会审计并修复损坏的 config**（缺 brain、非法端口/后端值、JSON 损坏等，修复前自动备份 `config.json.bak`）；`previously start` 在未初始化时会先自动走 init，且每次启动前也会跑同一套配置审计，保证内核永远拿到合法环境。
 
 命令面分两层——日常：`（无命令）` / `start` / `stop` / `status` / `logs` / `open`；高级：`init` / `kernel` / `install` / `uninstall` / `watch` / `scribe` / `ingest` / `bridge-exec`。
 
-config.json 契约（与 agent 仓库严格对齐；`previously init` 只写最小默认值，大脑等运行时配置在内核 Web UI 设置页维护）：`brain?: { "type": "api-key", "env": string, "model"?: string } | { "type": "bridge", "agent": "claude"|"codex"|"kimi" }`（缺省 = 内核沿用环境变量里的 key）；`apiKeys?: Record<string, string>`（手动录入的 key，本地 MVP 明文存储）。`start` 拉起内核时追加注入：`PREVIOUSLY_HOME`、`apiKeys` 每个键值、bridge 大脑时的 `PREVIOUSLY_BRAIN=bridge` + `PREVIOUSLY_BRAIN_AGENT`、api-key 大脑时的 key 值与 `PREVIOUSLY_DEFAULT_MODEL`（契约预留，内核可暂不消费）。
+**memory 是一个本地 git 仓库**（v8）：写入语义与云端完全一致——内核每次写盘按云端节奏 commit（一次 chat 回合 = `Turn <id> — housekeeping` + `Turn <id> — agent response` 两个 commit），scribe/ingest 按批次提交，`stop` 兜底清扫未提交变更。默认位置贴平台用户文档目录（`~/Documents/Previously`，无 Documents 则 `~/Previously`），`--memory-root` 或重跑 `init` 可改指/改链——指向一个已有的 Previously 仓库（比如从 GitHub clone 回来的）会直接领养、历史原样保留；指向非空非 git 目录会被拒绝（绝不覆盖用户文件）。git 操作为纯 JS 实现（isomorphic-git），用户机器不需要装 git；commit 失败永不阻断写入。`.workflow-data/`（含 BYOK 序列化载荷）、`logs/`、scribe 游标都在 `PREVIOUSLY_HOME` 而不在仓库内，仓库内容可以放心 push 成私有 GitHub repo。`previously status` 显示仓库分支/未提交数/最后 commit 时间。
+
+config.json 契约（与 agent 仓库严格对齐；`previously init` 只写最小默认值，大脑等运行时配置在内核 Web UI 设置页维护）：`brain?: { "type": "api-key", "env": string, "model"?: string } | { "type": "bridge", "agent": "claude"|"codex"|"kimi" }`（缺省 = 内核沿用环境变量里的 key）；`apiKeys?: Record<string, string>`（手动录入的 key，本地 MVP 明文存储）。`start` 拉起内核时追加注入：`PREVIOUSLY_HOME`、`apiKeys` 每个键值、bridge 大脑时的 `PREVIOUSLY_BRAIN=bridge` + `PREVIOUSLY_BRAIN_AGENT`、api-key 大脑时的 key 值与 `PREVIOUSLY_DEFAULT_MODEL`（内核自 0.9.0 起消费：BYOK 段未写 model 时以它作为默认模型）。
 
 Current commands (batches C1 + C1.5 + C2 + C3 + C4 + C6 + C7): `（裸命令：初始化/状态面板）`, `init`, `start`, `stop`, `status`, `logs`, `open`, `kernel`, `install`, `uninstall`, `watch`, `scribe`, `ingest`, `bridge-exec`, plus the constrained read commands for bridged agents (`readslice`, `timeline`, `strands`, `card`, `slicesummary`, `agentlog`).
 
-内核供应链（设计文档 §10）：`previously kernel install [--repo <git-url>]` 从 agent 仓库浅克隆钉死版本对应的 tag（`v<pinned>`）并构建 standalone 产物，安装到 `~/.previously/kernel/versions/<version>/`，原子切换 `kernel/current.json` 指针。版本策略：精确绑定——client 钉死一个确切内核版本（package.json `previously.kernelVersion`，当前 `0.9.0`），内核版本必须完全相等，patch 也不例外；升级 = 升级 client 包本身（不再有 `previously upgrade` / `kernel rollback`）。测试/逃逸通道：`previously kernel install --from <dir> --version <x.y.z>` 直接把本地 standalone 目录当作已构建产物安装。`start`/`status` 经指针解析内核目录并做兼容校验；config `kernelDir` 为显式覆盖。
+内核供应链（设计文档 §10）：`previously kernel install` 默认从 client 钉死的 npm 依赖 `previously-kernel` 安装预构建 standalone 产物——用户机器零构建、不需要 git/pnpm，安装到 `~/.previously/kernel/versions/<version>/`，原子切换 `kernel/current.json` 指针。版本策略：精确绑定——client 钉死一个确切内核版本（package.json `previously.kernelVersion` 与 `dependencies["previously-kernel"]`，当前 `0.9.0`），内核版本必须完全相等，patch 也不例外；升级 = 升级 client 包本身（不再有 `previously upgrade` / `kernel rollback`）。逃逸与开发者通道：`previously kernel install --from <dir> --version <x.y.z>` 直接把本地 standalone 目录当作已构建产物安装；`previously kernel install --repo [git-url]` 从 agent 仓库浅克隆钉死 tag 并本机构建（开发者用，需要 git + pnpm）。`start`/`status` 经指针解析内核目录并做兼容校验；config `kernelDir` 为显式覆盖。
 
-Repo builds require `git` and `pnpm` on PATH (shell-outs via `node:child_process`). Without any installed kernel, `start` falls back to a hand-placed standalone build in `~/.previously/kernel/` and fails with an actionable error if none exists.
+仅 `--repo` 通道要求 `git` 和 `pnpm` on PATH（shell-outs via `node:child_process`）；默认依赖安装无任何外部工具要求。Without any installed kernel, `start` falls back to a hand-placed standalone build in `~/.previously/kernel/` and fails with an actionable error if none exists.
 
 能力出口：~~只读 MCP server~~（已退役，`previously mcp` 与 MCP 注册均已移除）→ 现为「Previously」skill 组（`src/lib/skills.ts`，`{{MEMORY_ROOT}}` 占位符），一份 skill 目录四份文档：`SKILL.md`（总览与文档地图）、`memory.md`（只读记忆协议：Previously 是什么、memory 目录布局（`episodic/timeline.md`、`timeline/index.json`、`strands.json`、`slices/YYYY/MM/DD/HHMM/timeline/core.md`、月度 `_index.json`）、严格只读规则（持久化由内核/scribe 负责）、何时回忆、最终回复只含答复正文）、`ingest.md`（写入契约，见下）、`setup.md`（首次初始化走查，含逐步 token 成本披露——用户对 agent 说「帮我初始化 Previously」即可被完整执行）。两条投递通道：`previously install [--claude|--codex|--kimi|--all] [--dry-run]` 为每个已检测到的 agent CLI 写用户级格式——Claude: `~/.claude/skills/previously/`（四文件），Kimi: `~/.kimi/skills/previously/`，Codex: 在共享的 `~/.codex/AGENTS.md` 里追加哨兵注释包裹的 Previously 块（四文档拼接，绝不覆盖外来内容）；旧版 `previously-memory` 单文件 skill 目录在安装时自动迁移清理（仅当其中无外来文件）；首次修改前备份一次 `<file>.bak`，幂等，`previously uninstall` 对称移除（只动自己的文件/块）。桥接通道：`bridge-exec` 每次调用前把 memory 协议文档按各家 cwd 约定物化到临时工作目录（claude → `CLAUDE.md`，codex/kimi → `AGENTS.md`），以该目录为 cwd 拉起 CLI，调用结束后清理——被桥接的 agent 零配置拿到记忆协议。
 

@@ -128,6 +128,31 @@ describe('kernel lifecycle', () => {
     expect(await stop([], { graceTimeoutMs: 5_000 })).toBe(0);
   });
 
+  it('start proceeds when the recorded pid was reused by an unrelated process', async () => {
+    writeFixtureKernel(home);
+    writeConfigWithPort(port);
+    // Marker-style pid file: the pid is alive (this very test process) but
+    // its command line provably is not the kernel's server.js.
+    writePidFile(resolvePaths().pidPath, process.pid, 'reused-pid-not-the-kernel-server.js');
+
+    expect(await start([], { healthTimeoutMs: 15_000, startScribe: false })).toBe(0);
+    expect(stdout.join('\n')).toContain('unrelated process');
+    const pid = readPidFile(resolvePaths().pidPath);
+    expect(pid).not.toBe(process.pid);
+    expect(isProcessAlive(pid!)).toBe(true);
+    expect(await stop([], { graceTimeoutMs: 5_000 })).toBe(0);
+  });
+
+  it('stop never kills an unrelated process that reused the pid', async () => {
+    writePidFile(resolvePaths().pidPath, process.pid, 'reused-pid-not-the-kernel-server.js');
+
+    expect(await stop([], { graceTimeoutMs: 1_000 })).toBe(0);
+    expect(stdout.join('\n')).toContain('unrelated process');
+    expect(existsSync(resolvePaths().pidPath)).toBe(false);
+    // Obvious, but it is the point of the test: we are still alive.
+    expect(isProcessAlive(process.pid)).toBe(true);
+  });
+
   it('stop handles a stale pid file gracefully', async () => {
     writePidFile(resolvePaths().pidPath, getDeadPid());
     expect(await stop([], { graceTimeoutMs: 1_000 })).toBe(0);

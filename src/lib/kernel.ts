@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import {
   cpSync,
   existsSync,
@@ -100,7 +101,16 @@ export interface KernelPointer {
 /** Null when no kernel has ever been installed; throws on a corrupt pointer file. */
 export function readCurrentPointer(paths: PreviouslyPaths = resolvePaths()): KernelPointer | null {
   if (!existsSync(paths.kernelCurrentPath)) return null;
-  const raw = JSON.parse(readFileSync(paths.kernelCurrentPath, 'utf8')) as Partial<KernelPointer>;
+  let raw: Partial<KernelPointer>;
+  try {
+    raw = JSON.parse(readFileSync(paths.kernelCurrentPath, 'utf8')) as Partial<KernelPointer>;
+  } catch {
+    throw new Error(
+      `Corrupt kernel pointer at ${paths.kernelCurrentPath} (not valid JSON). ` +
+        'Fix it by reinstalling the kernel with `previously kernel install`, ' +
+        'or delete the file and set "kernelDir" in config.json to a standalone build.',
+    );
+  }
   if (typeof raw.version !== 'string' || typeof raw.dir !== 'string') {
     throw new Error(`Corrupt kernel pointer at ${paths.kernelCurrentPath} (expected { version, dir })`);
   }
@@ -208,6 +218,84 @@ export function installFromDir(opts: InstallFromDirOptions): InstallResult {
     throw new Error(`--from directory does not exist: ${opts.fromDir}`);
   }
   return stageAndSwitch(opts.fromDir, version, paths);
+}
+
+/** The npm package that ships the kernel standalone artifact (design doc §10.1 v5). */
+export const KERNEL_PACKAGE_NAME = 'previously-kernel';
+
+/** Resolves the root dir of the installed previously-kernel package (test seam). */
+export type KernelPackageResolver = () => string;
+
+/**
+ * Default resolver: locate the bundled previously-kernel npm package via
+ * Node's module resolution, starting from this file (which ships inside the
+ * client's dist/). Throws an actionable error when the dependency is missing
+ * (a partial/broken client install).
+ */
+export function defaultKernelPackageRoot(): string {
+  try {
+    const require = createRequire(import.meta.url);
+    return dirname(require.resolve(`${KERNEL_PACKAGE_NAME}/package.json`));
+  } catch {
+    throw new Error(
+      `The ${KERNEL_PACKAGE_NAME} package is not installed — your previously-client ` +
+        `install looks incomplete. Reinstall the client (\`npm i -g previously-client\`), ` +
+        `or install the kernel from a local artifact (\`--from <dir>\`) or from source (\`--repo\`).`,
+    );
+  }
+}
+
+export interface InstallFromDependencyOptions {
+  paths?: PreviouslyPaths;
+  /** Pinned-version override (tests); defaults to package.json previously.kernelVersion. */
+  pinned?: string;
+  /** Package-root resolver (tests inject a fixture); defaults to require.resolve. */
+  resolvePackageRoot?: KernelPackageResolver;
+}
+
+/**
+ * `previously kernel install` (default path) — install from the pinned
+ * previously-kernel npm dependency. The package ships the ready-made
+ * standalone artifact at <root>/standalone/, so the user's machine needs
+ * zero build tooling. The kernel version IS the dependency's package
+ * version (no --version flag); it must match the client's pin exactly —
+ * client and kernel ship in lockstep, a mismatch means the client install
+ * itself is out of date.
+ */
+export function installFromDependency(opts: InstallFromDependencyOptions = {}): InstallResult {
+  const paths = opts.paths ?? resolvePaths();
+  const pinned = opts.pinned ?? getPinnedKernelVersion();
+  const pkgRoot = (opts.resolvePackageRoot ?? defaultKernelPackageRoot)();
+
+  let version: string | null = null;
+  const pkgJsonPath = join(pkgRoot, 'package.json');
+  if (existsSync(pkgJsonPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf8')) as { version?: unknown };
+      const parsed = typeof pkg.version === 'string' ? parseSemver(pkg.version) : null;
+      version = parsed ? formatSemver(parsed) : null;
+    } catch {
+      version = null;
+    }
+  }
+  if (version === null) {
+    throw new Error(
+      `Could not read a version (x.y.z) from ${pkgJsonPath}. The installed ${KERNEL_PACKAGE_NAME} ` +
+        `package looks broken — reinstall the client (\`npm i -g previously-client\`).`,
+    );
+  }
+  const compat = checkCompat(version, pinned);
+  if (!compat.ok) throw new Error(compat.message);
+
+  const standaloneDir = join(pkgRoot, 'standalone');
+  if (!existsSync(standaloneDir)) {
+    throw new Error(
+      `The installed ${KERNEL_PACKAGE_NAME} package has no standalone/ directory (${pkgRoot}). ` +
+        `Reinstall the client (\`npm i -g previously-client\`), or install the kernel from a ` +
+        `local artifact (\`--from <dir>\`) or from source (\`--repo\`).`,
+    );
+  }
+  return stageAndSwitch(standaloneDir, version, paths);
 }
 
 export interface InstallFromRepoOptions {

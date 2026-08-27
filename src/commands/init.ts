@@ -1,12 +1,31 @@
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { BRIDGE_AGENTS } from '../bridge/types.js';
 import { defaultConfig, loadConfig, saveConfig } from '../lib/config.js';
-import { applyAudit, applyBackend, auditConfig } from '../lib/config-doctor.js';
+import { applyAudit, applyBackend, auditConfig, auditMemoryRepo } from '../lib/config-doctor.js';
 import { findOnPath } from '../lib/detect.js';
 import { countScribeSlices, purgeDerivedSlices } from '../lib/ingest.js';
-import { resolvePaths, type PreviouslyPaths } from '../lib/paths.js';
+import { ensureMemoryRepo } from '../lib/memory-repo.js';
+import { defaultMemoryRepo, resolvePaths, type PreviouslyPaths } from '../lib/paths.js';
 import { createPromptIO, type PromptIO } from '../lib/prompt.js';
+import {
+  banner,
+  bold,
+  cmd,
+  cmdTable,
+  emph,
+  err,
+  gray,
+  green,
+  heading,
+  info,
+  muted,
+  ok,
+  printBoxed,
+  red,
+  section,
+  warn,
+} from '../lib/ansi.js';
 import { SCRIBE_SOURCES, type ScribeRoots, type ScribeSource } from '../scribe/types.js';
 import { resolveScribeRoots } from '../scribe/watcher.js';
 import { run as cardRun } from './card.js';
@@ -18,7 +37,11 @@ import { createEngine } from './scribe.js';
  * whole job in one go:
  *
  *   1. Create the ~/.previously layout and write a minimal config.json
- *      (skipped when already initialized, unless --force).
+ *      (skipped when already initialized, unless --force). The memory root
+ *      (default: the platform-conventional repo location from
+ *      defaultMemoryRepo()) is a local git repository — created here, or
+ *      adopted when one already exists (e.g. cloned back from GitHub);
+ *      foreign non-empty directories are refused, never initialized over.
  *   2. HISTORY IMPORT: scan every detected agent CLI's session logs and
  *      transcribe them into Previously time slices (the scribe pipeline,
  *      pure local processing — no model calls, no token cost). This step is
@@ -41,6 +64,9 @@ import { createEngine } from './scribe.js';
  *                     --submit) slices are also dropped. Kernel conversations
  *                     (Previously's own chats) are NEVER touched.
  *   --skip-ingest     layout/config only, no history import (scripts/CI).
+ *
+ * All styling comes from lib/ansi.ts and is inert off-TTY, so --json and
+ * scripted output stay byte-stable.
  */
 
 const BACKEND_CHOICES = [...BRIDGE_AGENTS, 'api-key', 'none'] as const;
@@ -58,6 +84,7 @@ function ensureLayout(paths: PreviouslyPaths): void {
     paths.kernelDir,
     paths.kernelVersionsDir,
     paths.logsDir,
+    paths.skillsDir,
   ]) {
     mkdirSync(dir, { recursive: true });
   }
@@ -99,7 +126,7 @@ function runRebuild(paths: PreviouslyPaths, memoryRoot: string, includeCustom: b
   rmSync(paths.scribeSessionsDir, { recursive: true, force: true });
   rmSync(paths.scribeStatusPath, { force: true });
   console.log(
-    `Rebuild: removed ${removedIds.length} transcribed slice(s)` +
+    `${bold('Rebuild:')} removed ${removedIds.length} transcribed slice(s)` +
       `${includeCustom ? ' (including submitted custom content)' : ''}` +
       ' — kernel conversations were left untouched.',
   );
@@ -120,24 +147,56 @@ async function runImport(paths: PreviouslyPaths, roots?: ScribeRoots): Promise<I
       parseErrors: s.parseErrors,
     };
     if (!s.rootPresent) {
-      console.log(`  ${source}: no log directory found — skipped`);
+      console.log(`  ${bold(source)}: ${muted('no log directory found — skipped')}`);
     } else {
-      console.log(`  ${source}: ${s.filesProcessed} log file(s) transcribed (${s.events} events, ${s.parseErrors} parse errors)`);
+      const parseErrors = s.parseErrors > 0 ? red(String(s.parseErrors)) : String(s.parseErrors);
+      console.log(`  ${bold(source)}: ${s.filesProcessed} log file(s) transcribed (${s.events} events, ${parseErrors} parse errors)`);
     }
   }
-  for (const err of summary.errors) {
-    console.error(`  error: ${err.file}: ${err.message}`);
+  for (const e of summary.errors) {
+    console.error(err(`  error: ${e.file}: ${e.message}`));
   }
   return { perSource, errors: summary.errors.map((e) => `${e.file}: ${e.message}`) };
 }
 
 function printNextSteps(): void {
   console.log('');
-  console.log('Next steps:');
-  console.log('  previously start            start the kernel + scribe');
-  console.log('  previously open             open the Web UI');
-  console.log('  previously install --all    give your agent CLIs the Previously skill group');
-  console.log('  previously                  show the status dashboard');
+  console.log(section('Next steps:'));
+  for (const line of cmdTable([
+    ['previously start', 'start the kernel + scribe'],
+    ['previously open', 'open the Web UI'],
+    ['previously install --all', 'give your agent CLIs the Previously skill group'],
+    ['previously', 'show the status dashboard'],
+  ])) {
+    console.log(line);
+  }
+}
+
+/**
+ * Create/adopt the memory git repository at memoryRoot and report the outcome.
+ * Previously content stranded without a .git (pre-git-upgrade data) is first
+ * repaired in place via the doctor's memory audit. Returns false (after
+ * printing the reason + an actionable hint) when the directory cannot become
+ * the memory repo — init must not proceed then.
+ */
+async function ensureRepoStep(memoryRoot: string): Promise<boolean> {
+  const audit = await auditMemoryRepo(memoryRoot);
+  for (const repair of audit.repairs) console.log(`  ${green('repaired:')} ${repair}`);
+  const result = await ensureMemoryRepo(memoryRoot);
+  if (!result.ok) {
+    console.error(err(result.reason));
+    console.error(`Fix the directory, or re-run with ${cmd('previously init --memory-root <path>')} pointing elsewhere.`);
+    return false;
+  }
+  // When the doctor just repaired the repo into existence, its repair line
+  // already told the story — don't repeat it as an init/adopt note. (The
+  // doctor's audit runs ensureMemoryRepo itself, so a successful audit means
+  // `result` is `adopted` here; `created` is unreachable in this flow.)
+  if (audit.repairs.length > 0) return true;
+  if (result.adopted) {
+    console.log(info(`Adopted the existing Previously memory repository at ${emph(memoryRoot)} — its history is kept as-is.`));
+  }
+  return true;
 }
 
 export interface InitOptions {
@@ -159,13 +218,13 @@ export async function run(args: string[], opts: InitOptions = {}): Promise<numbe
   if (backendProvided) {
     const choice = normalizeBackend(values.backend!);
     if (choice === null) {
-      console.error(`Unknown --backend value: ${values.backend} (expected ${BACKEND_CHOICES.join('|')})`);
+      console.error(err(`Unknown --backend value: ${values.backend} (expected ${BACKEND_CHOICES.join('|')})`));
       return 1;
     }
     backend = choice === 'none' ? null : choice;
   }
   if (values['memory-root'] !== undefined && values['memory-root'].trim() === '') {
-    console.error('--memory-root must be a non-empty path.');
+    console.error(err('--memory-root must be a non-empty path.'));
     return 1;
   }
 
@@ -210,21 +269,32 @@ async function runNonInteractive(
       if (backendProvided) applyBackend(config, backend);
       if (values['memory-root'] !== undefined) config.memoryRoot = values['memory-root'];
       saveConfig(config, paths);
-      console.log(`Previously is already initialized at ${paths.home} — config updated (use --force to start over).`);
+      console.log(info(`Previously is already initialized at ${paths.home} — config updated (use --force to start over).`));
     } else {
-      console.log(`Previously is already initialized at ${paths.home} — existing config kept (use --force to overwrite).`);
+      console.log(info(`Previously is already initialized at ${paths.home} — existing config kept (use --force to overwrite).`));
     }
   } else {
+    if (alreadyInitialized) {
+      // --force: back up the existing config once before wiping it — apiKeys
+      // and agents tuning are user assets, not disposable state.
+      const backupPath = `${paths.configPath}.bak`;
+      if (!existsSync(backupPath)) {
+        copyFileSync(paths.configPath, backupPath);
+        console.log(info(`Existing config backed up to ${emph(backupPath)}.`));
+      }
+    }
     const config = defaultConfig(paths);
     applyBackend(config, backend);
-    if (values['memory-root'] !== undefined) config.memoryRoot = values['memory-root'];
+    // The default memory root is the platform-conventional repo location
+    // (Documents/Previously), overridable with --memory-root.
+    config.memoryRoot = values['memory-root'] ?? defaultMemoryRepo();
     saveConfig(config, paths);
-    console.log(`Initialized Previously home at ${paths.home}`);
-    console.log(`  memory/          local time-slice storage`);
-    console.log(`  kernel/versions/ installed kernel versions (see \`previously kernel install\`)`);
-    console.log(`  logs/            kernel logs`);
+    console.log(ok(`Initialized Previously home at ${emph(paths.home)}`));
+    console.log(`  ${bold('memory/')}          local time-slice storage`);
+    console.log(`  ${bold('kernel/versions/')} installed kernel versions (see ${cmd('`previously kernel install`')})`);
+    console.log(`  ${bold('logs/')}            kernel logs`);
     console.log(
-      `  config.json      written (execution backend: ${config.executionBackend ?? '(unset)'}` +
+      `  ${bold('config.json')}      written (execution backend: ${config.executionBackend ?? '(unset)'}` +
         `${config.brain?.type === 'bridge' ? `, brain: bridge:${config.brain.agent}` : ''}` +
         `, memory root: ${config.memoryRoot})`,
     );
@@ -234,11 +304,15 @@ async function runNonInteractive(
   // broken (missing brain for a bridge backend, illegal values, …).
   const audit = auditConfig(paths);
   if (audit.repairs.length > 0) {
-    for (const repair of audit.repairs) console.log(`  repaired: ${repair}`);
+    for (const repair of audit.repairs) console.log(`  ${green('repaired:')} ${repair}`);
     applyAudit(paths, audit);
   }
 
   const memoryRoot = loadConfig(paths).memoryRoot;
+
+  // The memory root is a git repository: create it, or adopt an existing one
+  // (e.g. cloned back from GitHub). Refuses to init over foreign data.
+  if (!(await ensureRepoStep(memoryRoot))) return 1;
 
   let removed = 0;
   if (values.rebuild) {
@@ -257,8 +331,10 @@ async function runNonInteractive(
   const existing = countScribeSlices(memoryRoot);
   if (!values.rebuild && existing > 0) {
     console.log(
-      `Memory already holds ${existing} transcribed slice(s); new content is picked up incrementally. ` +
-        'To discard and re-transcribe them from the raw logs, re-run with --rebuild.',
+      info(
+        `Memory already holds ${existing} transcribed slice(s); new content is picked up incrementally. ` +
+          'To discard and re-transcribe them from the raw logs, re-run with --rebuild.',
+      ),
     );
   }
   const result = await runImport(paths, opts.roots);
@@ -291,24 +367,33 @@ async function runWizard(
   const io = opts.promptIO ?? createPromptIO();
   const skipped: string[] = [];
   try {
-    console.log('Previously — local long-term memory for your agents.');
-    console.log('This wizard sets up the home layout and config, then can transcribe');
-    console.log('your existing agent history into time slices (pure local processing).');
-    console.log('Steps that spend subscription tokens are opt-in and estimated first.');
+    const bannerLines = banner('Previously', 'local long-term memory for your agents.');
+    const welcomeBody = [
+      'This wizard sets up the home layout and config, then can transcribe',
+      'your existing agent history into time slices (pure local processing).',
+      muted('Steps that spend subscription tokens are opt-in and estimated first.'),
+    ];
+    if (bannerLines.length > 0) {
+      for (const line of bannerLines) console.log(line);
+      console.log('');
+      for (const line of welcomeBody) console.log(line);
+    } else {
+      printBoxed([heading('Previously — local long-term memory for your agents.'), ...welcomeBody]);
+    }
     console.log('');
 
     ensureLayout(paths);
     const alreadyInitialized = existsSync(paths.configPath);
     if (alreadyInitialized && !values.force) {
-      console.log(`Existing config found at ${paths.configPath} — keeping it (re-run with --force to reconfigure).`);
+      console.log(info(`Existing config found at ${paths.configPath} — keeping it (re-run with --force to reconfigure).`));
       // Config doctor: surface problems and offer to repair them.
       const audit = auditConfig(paths);
       if (audit.repairs.length > 0) {
-        console.log('Your config has issues:');
+        console.log(warn('Your config has issues:'));
         for (const repair of audit.repairs) console.log(`  - ${repair}`);
         if (await io.confirm('Repair these now? (a config.json.bak backup is kept)', true)) {
           applyAudit(paths, audit);
-          console.log('Config repaired.');
+          console.log(ok('Config repaired.'));
         } else {
           skipped.push('config repairs (declined — `previously init --non-interactive` repairs automatically)');
         }
@@ -317,8 +402,8 @@ async function runWizard(
       const config = defaultConfig(paths);
 
       const memoryAnswer = await io.ask(
-        'Where should Previously store your memory (time slices)?',
-        values['memory-root'] ?? paths.memoryDir,
+        'Where should Previously store your memory (time slices)? It becomes a local git repository — you can push it to a private GitHub repo later.',
+        values['memory-root'] ?? defaultMemoryRepo(),
       );
       config.memoryRoot = memoryAnswer;
 
@@ -326,26 +411,30 @@ async function runWizard(
       const found = detected.filter((d) => d.found).map((d) => d.agent);
       console.log(
         found.length > 0
-          ? `Detected agent CLIs on PATH: ${found.join(', ')}`
-          : 'No agent CLI detected on PATH (claude/codex/kimi).',
+          ? `Detected agent CLIs on PATH: ${green(found.join(', '))}`
+          : muted('No agent CLI detected on PATH (claude/codex/kimi).'),
       );
       const defaultBackend = backendProvided ? (backend ?? 'none') : (found[0] ?? 'none');
       let choice: BackendChoice | null = null;
       while (choice === null) {
         const answer = await io.ask(`Execution backend (${BACKEND_CHOICES.join('/')})`, defaultBackend);
         choice = normalizeBackend(answer);
-        if (choice === null) console.log(`Unknown backend "${answer}" — expected ${BACKEND_CHOICES.join('|')}.`);
+        if (choice === null) console.log(err(`Unknown backend "${answer}" — expected ${BACKEND_CHOICES.join('|')}.`));
       }
       applyBackend(config, choice === 'none' ? null : choice);
 
       saveConfig(config, paths);
-      console.log(`Config written to ${paths.configPath}`);
-      console.log(`  memory root:      ${config.memoryRoot}`);
-      console.log(`  execution backend: ${config.executionBackend ?? '(unset)'}`);
-      if (config.brain?.type === 'bridge') console.log(`  brain:            bridge:${config.brain.agent} (subscription — no API key needed)`);
+      console.log(ok(`Config written to ${emph(paths.configPath)}`));
+      console.log(`  ${bold('memory root:')}      ${emph(config.memoryRoot)}`);
+      console.log(`  ${bold('execution backend:')} ${config.executionBackend ?? '(unset)'}`);
+      if (config.brain?.type === 'bridge') console.log(`  ${bold('brain:')}            bridge:${config.brain.agent} (subscription — no API key needed)`);
     }
 
     const memoryRoot = loadConfig(paths).memoryRoot;
+
+    // The memory root is a git repository: create it, or adopt an existing
+    // one (e.g. cloned back from GitHub). Refuses to init over foreign data.
+    if (!(await ensureRepoStep(memoryRoot))) return 1;
 
     // Existing content: keep-and-increment (default) or rebuild.
     let rebuild = values.rebuild;
@@ -374,16 +463,18 @@ async function runWizard(
       const roots = opts.roots ?? resolveScribeRoots();
       const sources = detectSources(roots);
       console.log('');
-      console.log('Agent history on this machine:');
-      for (const s of sources) {
-        console.log(`  ${s.source}: ${s.present ? `logs found (${s.root})` : 'no logs found'}`);
-      }
+      console.log(section('Agent history on this machine:'));
+      printBoxed(
+        sources.map(
+          (s) => `  ${bold(s.source)}: ${s.present ? green(`logs found (${s.root})`) : muted('no logs found')}`,
+        ),
+      );
       if (!sources.some((s) => s.present)) {
-        console.log('Nothing to import yet — the scribe picks up new sessions automatically once started.');
+        console.log(muted('Nothing to import yet — the scribe picks up new sessions automatically once started.'));
       } else if (
         await io.confirm('Transcribe this history into time slices now? (pure local processing, no token cost)', true)
       ) {
-        console.log('Importing history…');
+        console.log(info('Importing history…'));
         const result = await runImport(paths, roots);
         importErrors = result.errors.length;
       } else {
@@ -399,10 +490,10 @@ async function runWizard(
     const hasSlices = countScribeSlices(memoryRoot) > 0;
     console.log('');
     if (!brainUsable) {
-      console.log('No usable bridge backend configured — skipping the optional token-spending steps.');
-      console.log('(You can run `previously ingest --mark` / `previously card bootstrap` later once a backend is set.)');
+      console.log(muted('No usable bridge backend configured — skipping the optional token-spending steps.'));
+      console.log(muted('(You can run `previously ingest --mark` / `previously card bootstrap` later once a backend is set.)'));
     } else if (!hasSlices) {
-      console.log('No slices in memory yet — skipping the optional token-spending steps.');
+      console.log(muted('No slices in memory yet — skipping the optional token-spending steps.'));
     } else {
       if (
         await io.confirm(
@@ -432,11 +523,11 @@ async function runWizard(
     }
 
     console.log('');
-    console.log('All done.');
+    printBoxed([ok(bold('All done.'))], { tone: 'green', pad: true });
     printNextSteps();
     if (skipped.length > 0) {
-      console.log('Skipped:');
-      for (const s of skipped) console.log(`  - ${s}`);
+      console.log(bold('Skipped:'));
+      for (const s of skipped) console.log(gray(`  - ${s}`));
     }
     return importErrors > 0 ? 1 : 0;
   } finally {

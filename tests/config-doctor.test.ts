@@ -1,9 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { defaultConfig, type PreviouslyConfig } from '../src/lib/config.js';
-import { applyAudit, applyBackend, auditConfig, isBridgeAgent, repairConfig } from '../src/lib/config-doctor.js';
+import { applyAudit, applyBackend, auditConfig, auditMemoryRepo, isBridgeAgent, repairConfig } from '../src/lib/config-doctor.js';
+import { ensureMemoryRepo, repoSummary } from '../src/lib/memory-repo.js';
 import { resolvePaths } from '../src/lib/paths.js';
-import { cleanupTempHome, useTempHome } from './helpers.js';
+import { cleanupTempHome, useTempHome, writeFixtureMemory } from './helpers.js';
 
 /**
  * The config doctor runs fully sandboxed: PREVIOUSLY_HOME points at a temp
@@ -232,6 +234,41 @@ describe('config doctor', () => {
     expect(repaired.brain).toEqual({ type: 'bridge', agent: 'claude' });
   });
 
+  it('a second repair keeps the original .bak instead of clobbering it', () => {
+    home = useTempHome();
+    const paths = resolvePaths();
+    writeRawConfig({ port: 'abc', note: 'ORIGINAL' });
+    const original = readFileSync(paths.configPath, 'utf8');
+
+    applyAudit(paths, auditConfig(paths));
+    expect(readFileSync(`${paths.configPath}.bak`, 'utf8')).toBe(original);
+
+    // Corrupt the config again and repair again — the .bak must still hold
+    // the FIRST pre-repair state, not the damaged intermediate.
+    writeRawConfig({ port: 'xyz', note: 'CORRUPT-V2' });
+    applyAudit(paths, auditConfig(paths));
+    expect(readFileSync(`${paths.configPath}.bak`, 'utf8')).toBe(original);
+    expect(readConfig().port).toBe(3210);
+  });
+
+  it('a byok section survives repairs and suppresses bridge-brain re-derivation', () => {
+    home = useTempHome();
+    const paths = resolvePaths();
+    // The Web UI BYOK engine deliberately clears brain; the doctor must not
+    // resurrect a bridge brain from the backend on the next `start`.
+    writeRawConfig({
+      executionBackend: 'kimi',
+      byok: { provider: 'deepseek', apiKey: 'sk-x', model: 'deepseek-chat' },
+    });
+
+    const audit = auditConfig(paths);
+    expect(audit.repairs).toEqual([]);
+    applyAudit(paths, audit);
+    const config = readConfig() as PreviouslyConfig & { byok?: unknown };
+    expect(config.brain).toBeUndefined();
+    expect(config.byok).toEqual({ provider: 'deepseek', apiKey: 'sk-x', model: 'deepseek-chat' });
+  });
+
   it('applyAudit on a healthy config is a no-op (no .bak, bytes untouched)', () => {
     home = useTempHome();
     const paths = resolvePaths();
@@ -241,5 +278,54 @@ describe('config doctor', () => {
     applyAudit(paths, auditConfig(paths));
     expect(existsSync(`${paths.configPath}.bak`)).toBe(false);
     expect(readFileSync(paths.configPath, 'utf8')).toBe(before);
+  });
+});
+
+describe('memory repo doctor', () => {
+  let home: string;
+  afterEach(() => cleanupTempHome(home));
+
+  it('recreates a missing memory root as a git repository', async () => {
+    home = useTempHome();
+    const memoryRoot = join(home, 'memory');
+    const audit = await auditMemoryRepo(memoryRoot);
+    expect(audit.repairs.join('\n')).toContain('recreated as a git repository');
+    expect(audit.warnings).toEqual([]);
+    expect(existsSync(join(memoryRoot, '.git'))).toBe(true);
+    expect(existsSync(join(memoryRoot, 'README.md'))).toBe(true);
+  });
+
+  it('initializes git in place when Previously content exists without .git (content committed)', async () => {
+    home = useTempHome();
+    const memoryRoot = join(home, 'memory');
+    writeFixtureMemory(home);
+    const audit = await auditMemoryRepo(memoryRoot);
+    expect(audit.repairs.join('\n')).toContain('initialized a git repository in place');
+    expect(audit.warnings).toEqual([]);
+    expect(existsSync(join(memoryRoot, '.git'))).toBe(true);
+    // The pre-existing content was committed, not left dangling.
+    const summary = await repoSummary(memoryRoot);
+    expect(summary?.uncommitted).toBe(0);
+    expect(summary?.lastCommitAt).not.toBeNull();
+  });
+
+  it('only warns on a foreign non-empty non-git directory and never touches it', async () => {
+    home = useTempHome();
+    const memoryRoot = join(home, 'memory');
+    mkdirSync(memoryRoot, { recursive: true });
+    writeFileSync(join(memoryRoot, 'precious.txt'), 'do not touch\n', 'utf8');
+    const audit = await auditMemoryRepo(memoryRoot);
+    expect(audit.repairs).toEqual([]);
+    expect(audit.warnings.join('\n')).toContain('not a git repository');
+    expect(existsSync(join(memoryRoot, '.git'))).toBe(false);
+  });
+
+  it('leaves a healthy git repository alone', async () => {
+    home = useTempHome();
+    const memoryRoot = join(home, 'memory');
+    await ensureMemoryRepo(memoryRoot);
+    const audit = await auditMemoryRepo(memoryRoot);
+    expect(audit.repairs).toEqual([]);
+    expect(audit.warnings).toEqual([]);
   });
 });

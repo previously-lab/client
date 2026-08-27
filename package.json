@@ -30,6 +30,8 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "chokidar": "^5.0.0"
+    "chokidar": "^5.0.0",
+    "isomorphic-git": "^1.41.9",
+    "previously-kernel": "0.9.0"
   }
 }

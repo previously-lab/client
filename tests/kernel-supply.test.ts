@@ -78,6 +78,15 @@ describe('kernel supply chain', () => {
     expect(readCurrentPointer()).toBeNull();
   });
 
+  it('a corrupt current.json fails with an actionable message, not a raw SyntaxError', () => {
+    const paths = resolvePaths();
+    mkdirSync(paths.kernelDir, { recursive: true });
+    writeFileSync(paths.kernelCurrentPath, '{garbage', 'utf8');
+
+    expect(() => readCurrentPointer(paths)).toThrow(/not valid JSON/);
+    expect(() => readCurrentPointer(paths)).toThrow(/previously kernel install/);
+  });
+
   it('a failed install leaves the previous pointer and versions intact (atomic switch)', () => {
     const good = makeSourceDir(home, 'good');
     installFromDir({ fromDir: good, version: '0.9.0' });

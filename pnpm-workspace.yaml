@@ -1,0 +1,6 @@
+# TEMPORARY (pre-release): previously-kernel@0.9.0 is not on npm yet, so its
+# resolution is pinned to the locally built kernel package. Remove this file's
+# `overrides` entry once previously-kernel is published. (pnpm 11 reads
+# overrides from this file, not from package.json.)
+overrides:
+  previously-kernel: link:../Aftrbrez/dist-kernel

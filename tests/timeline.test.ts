@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { run as timeline, truncateTimelineOutput } from '../src/commands/timeline.js';
 import { defaultConfig, saveConfig } from '../src/lib/config.js';
@@ -182,13 +184,40 @@ describe('timeline command', () => {
     expect(stdout).toEqual([]);
   });
 
-  it('uninitialized memory exits 1 with an honest not_found error', async () => {
+  it('a not-yet-generated timeline prints a friendly note and exits 0', async () => {
+    // After init/ingest the kernel has not run a chat turn yet, so neither
+    // timeline.md nor timeline/index.json exists — this is normal, not an error.
     saveConfig(defaultConfig(resolvePaths()), resolvePaths()); // no memory tree written
 
     const code = await timeline([]);
+    expect(code).toBe(0);
+    const out = stdout.join('\n');
+    expect(out).toContain('No timeline yet');
+    expect(out).toContain('previously start');
+    expect(stderr).toEqual([]);
+  });
+
+  it('an existing but empty timeline.md is the same friendly not-yet state', async () => {
+    saveConfig(defaultConfig(resolvePaths()), resolvePaths());
+    const episodic = join(home, 'memory', 'episodic');
+    mkdirSync(episodic, { recursive: true });
+    writeFileSync(join(episodic, 'timeline.md'), '', 'utf8');
+
+    const code = await timeline([]);
+    expect(code).toBe(0);
+    expect(stdout.join('\n')).toContain('No timeline yet');
+    expect(stderr).toEqual([]);
+  });
+
+  it('an existing timeline file whose content matches nothing still errors (exit 1)', async () => {
+    saveConfig(defaultConfig(resolvePaths()), resolvePaths());
+    const episodic = join(home, 'memory', 'episodic');
+    mkdirSync(episodic, { recursive: true });
+    writeFileSync(join(episodic, 'timeline.md'), 'garbage, no sections\n', 'utf8');
+
+    const code = await timeline(['--month', '2026-08']);
     expect(code).toBe(1);
     expect(stderr.join('\n')).toContain('[not_found]');
-    expect(stdout).toEqual([]);
   });
 });
 

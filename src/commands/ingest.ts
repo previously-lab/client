@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import { dispatchBridgeTask, BridgeError, resolveTimeoutMs } from '../bridge/index.js';
 import { loadConfig, resolveBrainAgent } from '../lib/config.js';
 import { admitSlice, IngestError, parseSubmittedSlice } from '../lib/ingest.js';
+import { commitAll } from '../lib/memory-repo.js';
 import {
   applyMark,
   compressSliceForMarking,
@@ -16,6 +17,17 @@ import { join } from 'node:path';
 import { createEngine } from './scribe.js';
 import { listSessionFiles, resolveScribeRoots, sourceFileMatcher, type ScribeEngine } from '../scribe/watcher.js';
 import { SCRIBE_SOURCES, type ScribeRoots, type ScribeSource } from '../scribe/types.js';
+import {
+  bold,
+  emph,
+  err as errText,
+  info,
+  muted,
+  ok as okText,
+  red,
+  styleHelp,
+  warn,
+} from '../lib/ansi.js';
 
 /**
  * `previously ingest` — the admission door for EXTERNAL memory writes.
@@ -50,7 +62,7 @@ import { SCRIBE_SOURCES, type ScribeRoots, type ScribeSource } from '../scribe/t
  */
 
 function usage(): void {
-  console.log(`previously ingest — admit external content into Previously memory
+  console.log(styleHelp(`previously ingest — admit external content into Previously memory
 
 Modes:
   --source <${SCRIBE_SOURCES.join('|')}>
@@ -67,7 +79,7 @@ Modes:
     --yes           Confirm the estimated batch and actually spend
 
 Ingested slices are historical: they never trigger card evolution and never
-get card snapshots. See \`previously card bootstrap\` for the 前情提要.`);
+get card snapshots. See \`previously card bootstrap\` for the 前情提要.`));
 }
 
 async function readStdin(): Promise<string> {
@@ -105,31 +117,41 @@ async function runSourceMode(
       : listSessionFiles(roots[source], sourceFileMatcher(source));
 
   if (filePath !== undefined && !existsSync(filePath)) {
-    console.error(`File not found: ${filePath}`);
+    console.error(errText(`File not found: ${filePath}`));
     return 1;
   }
   if (files.length === 0) {
-    console.log(`${source}: no session log files found under ${filePath ?? roots[source]}`);
+    console.log(muted(`${source}: no session log files found under ${filePath ?? roots[source]}`));
     return 0;
   }
 
   let failures = 0;
+  const touchedSlices = new Set<string>();
   for (const file of files) {
     try {
       const result = await engine.processFile(file, source);
       if (result === null) {
-        console.log(`  ${file}: skipped (not a regular file)`);
+        console.log(`  ${file}: ${muted('skipped (not a regular file)')}`);
         continue;
       }
+      if (result.sliceId !== null && result.newEvents + result.newParseErrors > 0) {
+        touchedSlices.add(result.sliceId);
+      }
       const slice = result.sliceId ?? '(no parseable events)';
-      console.log(`  ${file}: slice ${slice}, ${result.newEvents} events, ${result.newParseErrors} parse errors`);
+      const parseErrors = result.newParseErrors > 0 ? red(String(result.newParseErrors)) : String(result.newParseErrors);
+      console.log(`  ${file}: slice ${emph(slice)}, ${result.newEvents} events, ${parseErrors} parse errors`);
     } catch (err) {
       failures++;
-      console.error(`  ${file}: ERROR ${err instanceof Error ? err.message : err}`);
+      console.error(errText(`  ${file}: ERROR ${err instanceof Error ? err.message : err}`));
     }
   }
   engine.writeStatus();
-  console.log(`${source}: ${files.length - failures}/${files.length} files ingested. Memory root: ${loadConfig(paths).memoryRoot}`);
+  // Land the batch in the memory repo (no-op when it is not a git repository).
+  if (touchedSlices.size > 0) {
+    await commitAll(loadConfig(paths).memoryRoot, `Ingest: ${touchedSlices.size} slice(s) from ${source}`);
+  }
+  const summary = `${source}: ${files.length - failures}/${files.length} files ingested. Memory root: ${loadConfig(paths).memoryRoot}`;
+  console.log(failures > 0 ? warn(summary) : okText(summary));
   return failures > 0 ? 1 : 0;
 }
 
@@ -139,18 +161,18 @@ async function runSubmitMode(submitPath: string): Promise<number> {
   try {
     doc = submitPath === '-' ? await readStdin() : readFileSync(submitPath, 'utf8');
   } catch (err) {
-    console.error(`Could not read ${submitPath}: ${err instanceof Error ? err.message : err}`);
+    console.error(errText(`Could not read ${submitPath}: ${err instanceof Error ? err.message : err}`));
     return 2;
   }
 
   const { slice, issues, dropped } = parseSubmittedSlice(doc);
   if (slice === null) {
-    console.error(`Submission rejected — ${issues.length} issue(s). Fix and resubmit; nothing was written.`);
-    for (const issue of issues) console.error(`  issue: ${issue.path}: ${issue.message}`);
+    console.error(errText(`Submission rejected — ${issues.length} issue(s). Fix and resubmit; nothing was written.`));
+    for (const issue of issues) console.error(`  ${red('issue:')} ${issue.path}: ${issue.message}`);
     return 1;
   }
   for (const key of dropped) {
-    console.error(`  note: unknown frontmatter key "${key}" dropped by canonical rendering`);
+    console.error(muted(`  note: unknown frontmatter key "${key}" dropped by canonical rendering`));
   }
 
   const config = loadConfig(resolvePaths());
@@ -158,21 +180,22 @@ async function runSubmitMode(submitPath: string): Promise<number> {
   try {
     const result = admitSlice(config.memoryRoot, slice, timezone);
     if (result.action === 'duplicate') {
-      console.log(`Already ingested (identical content): slice ${result.sliceId} — nothing written.`);
+      console.log(info(`Already ingested (identical content): slice ${result.sliceId} — nothing written.`));
     } else {
       if (result.remappedFrom !== null) {
-        console.log(`Slice id ${result.remappedFrom} was taken by another session; remapped to ${result.sliceId}.`);
+        console.log(info(`Slice id ${result.remappedFrom} was taken by another session; remapped to ${result.sliceId}.`));
       }
-      console.log(`Ingested as slice ${result.sliceId}: ${result.path}`);
+      console.log(okText(`Ingested as slice ${emph(result.sliceId)}: ${emph(result.path)}`));
+      await commitAll(config.memoryRoot, `Ingest: 1 slice from ${slice.source}`);
       if (slice.focus === '' && slice.summary === '') {
-        console.log('Note: slice is dry (no focus/summary) — the kernel backfills it lazily, or run `previously ingest --mark` (spends tokens).');
+        console.log(muted('Note: slice is dry (no focus/summary) — the kernel backfills it lazily, or run `previously ingest --mark` (spends tokens).'));
       }
     }
     return 0;
   } catch (err) {
     if (err instanceof IngestError) {
-      console.error(`Submission rejected: ${err.message}`);
-      for (const issue of err.issues) console.error(`  issue: ${issue.path}: ${issue.message}`);
+      console.error(errText(`Submission rejected: ${err.message}`));
+      for (const issue of err.issues) console.error(`  ${red('issue:')} ${issue.path}: ${issue.message}`);
       return 1;
     }
     throw err;
@@ -186,13 +209,13 @@ async function runMarkMode(agentFlag: string | undefined, yes: boolean): Promise
   const agent = resolveBrainAgent(agentFlag, config);
   const dry = findDrySlices(config.memoryRoot);
   if (dry.length === 0) {
-    console.log('No dry slices (every slice has a focus or summary). Nothing to do.');
+    console.log(okText('No dry slices (every slice has a focus or summary). Nothing to do.'));
     return 0;
   }
 
-  console.log(`Marking plan: ${dry.length} dry slice(s) → ${dry.length} model call(s) via ${agent} (your subscription).`);
+  console.log(`${bold('Marking plan:')} ${dry.length} dry slice(s) → ${dry.length} model call(s) via ${emph(agent)} (your subscription).`);
   if (!yes) {
-    console.log('This spends tokens. Re-run with --yes to confirm this batch (one confirmation per batch).');
+    console.log(warn('This spends tokens. Re-run with --yes to confirm this batch (one confirmation per batch).'));
     return 0;
   }
 
@@ -219,16 +242,19 @@ async function runMarkMode(agentFlag: string | undefined, yes: boolean): Promise
       const { skippedKeys } = applyMark(config.memoryRoot, ref.sliceId, mark);
       ok++;
       console.log(
-        `  ${ref.sliceId}: marked (${mark.focus || mark.summary})` +
+        `  ${okText(`${ref.sliceId}: marked (${mark.focus || mark.summary})`)}` +
           (skippedKeys.length > 0 ? ` — left untouched: ${skippedKeys.join(', ')}` : ''),
       );
     } catch (err) {
       failed++;
       const reason = err instanceof BridgeError ? `[${err.reason}] ` : '';
-      console.error(`  ${ref.sliceId}: FAILED ${reason}${err instanceof Error ? err.message : err}`);
+      console.error(`  ${errText(`${ref.sliceId}: FAILED ${reason}${err instanceof Error ? err.message : err}`)}`);
     }
   }
-  console.log(`Marking done: ${ok} marked, ${failed} failed.`);
+  const doneLine = `Marking done: ${ok} marked, ${failed} failed.`;
+  console.log(failed > 0 ? warn(doneLine) : okText(doneLine));
+  // Commit the marks that landed (no-op when the memory root is not a repo).
+  if (ok > 0) await commitAll(config.memoryRoot, `Ingest: marked ${ok} slice(s)`);
   return failed > 0 ? 1 : 0;
 }
 
@@ -249,7 +275,7 @@ export async function run(args: string[]): Promise<number> {
       },
     }));
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(errText(err instanceof Error ? err.message : String(err)));
     usage();
     return 2;
   }
@@ -260,12 +286,12 @@ export async function run(args: string[]): Promise<number> {
 
   const modes = [values.source !== undefined, values.submit !== undefined, values.mark === true].filter(Boolean).length;
   if (modes !== 1) {
-    console.error('Choose exactly one mode: --source, --submit, or --mark.');
+    console.error(errText('Choose exactly one mode: --source, --submit, or --mark.'));
     usage();
     return 2;
   }
   if (values.root !== undefined && values.path !== undefined) {
-    console.error('--root and --path are mutually exclusive.');
+    console.error(errText('--root and --path are mutually exclusive.'));
     return 2;
   }
 
@@ -278,7 +304,7 @@ export async function run(args: string[]): Promise<number> {
     }
     return await runMarkMode(values.agent, values.yes === true);
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(errText(err instanceof Error ? err.message : String(err)));
     return err instanceof IngestError ? 1 : 2;
   }
 }

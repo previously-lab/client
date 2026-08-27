@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,6 +13,7 @@ import {
   SENTINEL_END,
   SENTINEL_START,
   sentinelBlock,
+  sweepStaleBridgeWorkspaces,
   userSharedFilePath,
   userSkillDir,
   workspaceFileName,
@@ -303,5 +304,28 @@ describe('materializeBridgeWorkspace', () => {
     expect(() =>
       materializeBridgeWorkspace('claude', ROOT, undefined, { skills: { '../evil': 'x' } }),
     ).toThrow(/Invalid skill name/);
+  });
+});
+
+describe('sweepStaleBridgeWorkspaces', () => {
+  // Hard-killed bridge-exec processes (TerminateProcess runs no finally)
+  // leave their workspace behind; the sweep collects them next call.
+  it('removes stale workspaces, keeps fresh ones, ignores foreign dirs', () => {
+    const tag = `sweep-${process.pid}`;
+    const stale = join(tmpdir(), `previously-bridge-${tag}-old`);
+    const fresh = join(tmpdir(), `previously-bridge-${tag}-new`);
+    const foreign = join(tmpdir(), `unrelated-${tag}`);
+    for (const dir of [stale, fresh, foreign]) mkdirSync(dir, { recursive: true });
+    const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    utimesSync(stale, twoDaysAgo, twoDaysAgo);
+    utimesSync(foreign, twoDaysAgo, twoDaysAgo);
+    try {
+      sweepStaleBridgeWorkspaces();
+      expect(existsSync(stale)).toBe(false);
+      expect(existsSync(fresh)).toBe(true);
+      expect(existsSync(foreign)).toBe(true);
+    } finally {
+      for (const dir of [stale, fresh, foreign]) rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

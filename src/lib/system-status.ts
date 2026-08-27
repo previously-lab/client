@@ -4,8 +4,9 @@ import { BRIDGE_AGENTS, checkCliPresence, type BridgeAgent } from '../bridge/ind
 import { loadConfig, type PreviouslyConfig } from './config.js';
 import { isPortOpen } from './health.js';
 import { resolveKernel } from './kernel.js';
+import { repoSummary, type MemoryRepoSummary } from './memory-repo.js';
 import { resolvePaths, type PreviouslyPaths } from './paths.js';
-import { isProcessAlive, readPidFile } from './process.js';
+import { checkPidFile } from './process.js';
 import { checkCompat, type CompatResult } from './version-policy.js';
 import { readScribeStatus, type ScribeStatus } from '../scribe/status.js';
 
@@ -46,6 +47,8 @@ export interface SystemStatus {
   scribeStatus: ScribeStatus | null;
   bridges: BridgePresence[];
   today: TodayStats;
+  /** Git state of the memory root; null when it is not a git repository. */
+  memoryRepo: MemoryRepoSummary | null;
 }
 
 /** Count today's slice directories (episodic/slices/YYYY/MM/DD/HHMM). */
@@ -68,14 +71,16 @@ function countTodaySlices(memoryRoot: string, now: Date = new Date()): number | 
 
 export async function collectStatus(paths: PreviouslyPaths = resolvePaths()): Promise<SystemStatus> {
   const config = loadConfig(paths);
-  const kernelPid = readPidFile(paths.pidPath);
-  const kernelAlive = kernelPid !== null && isProcessAlive(kernelPid);
+  const kernelCheck = checkPidFile(paths.pidPath);
+  const kernelPid = kernelCheck.pid;
+  const kernelAlive = kernelCheck.status === 'running';
   const reachable = await isPortOpen(config.port, config.hostname, 1_500);
   const kernel = resolveKernel(config.kernelDir, paths);
   const compat = kernel.version !== null ? checkCompat(kernel.version) : null;
 
-  const scribePid = readPidFile(paths.scribePidPath);
-  const scribeAlive = scribePid !== null && isProcessAlive(scribePid);
+  const scribeCheck = checkPidFile(paths.scribePidPath);
+  const scribePid = scribeCheck.pid;
+  const scribeAlive = scribeCheck.status === 'running';
   const scribeStatus = readScribeStatus(paths.scribeStatusPath);
 
   const lastEventAt =
@@ -106,6 +111,7 @@ export async function collectStatus(paths: PreviouslyPaths = resolvePaths()): Pr
       return { agent, found: presence.found, detail: presence.detail };
     }),
     today: { sliceCount: countTodaySlices(config.memoryRoot), lastEventAt },
+    memoryRepo: await repoSummary(config.memoryRoot),
   };
 }
 

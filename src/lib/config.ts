@@ -57,6 +57,14 @@ export interface PreviouslyConfig {
   apiKeys?: Record<string, string>;
   /** Per-agent model/effort tuning for bridge-exec dispatches (§7). */
   agents?: AgentsConfig;
+  /**
+   * BYOK (bring-your-own-key) engine section, written by the kernel Web UI
+   * settings page (POST /api/client/config). The client never reads it; it
+   * only has to survive load/save and the config doctor untouched. Its
+   * presence means the user deliberately picked the BYOK engine — which is
+   * why the doctor must not re-derive a bridge brain (see config-doctor.ts).
+   */
+  byok?: Record<string, unknown>;
 }
 
 export const DEFAULT_PORT = 3210;
