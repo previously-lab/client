@@ -146,6 +146,8 @@ BUG-0/1/2/3 均已修复，发布的主要障碍已清除。剩余按价值排�
 
 **发布注意**：client 的 `pnpm-workspace.yaml` 里有临时 override（`previously-kernel: link:../Aftrbrez/dist-kernel`）供内核发布前开发联调，**内核发布后须移除**；`pnpm-lock.yaml` 本轮首次更新（isomorphic-git + link 依赖）。
 
+**发布流水线（GitHub）**：agent 仓库 `release-kernel.yml` 加固——tag 版本直接作为内核包版本（`PREVIOUSLY_KERNEL_VERSION` 覆盖，`pack-kernel.mjs` 已支持，解决 bump-version 事后回同步的时序问题）、发布前出厂审计（零 symlink）+ standalone 冒烟启动 + tarball artifact 留存；client 新增 `release.yml`（tag 触发：一致性校验 `scripts/check-release.mjs` → pinned 内核在 npm 的存在性前置检查 → build/test/pack → 全局安装冒烟（含 `kernel install` 依赖路径）→ publish --provenance）与 `docs/release-process.md` runbook；`test.yml` 临时兼容本地内核 override（内核发布后按 runbook 清理）。两个仓库的 release workflow 都需要配置 `NPM_TOKEN` secret，发布顺序：先内核 tag，后 client tag。
+
 ## 复现与证据
 
 - 测试环境残留：`client/.e2e/`（tarball、隔离 prefix、各 scratch home、探针脚本），已加入 `.gitignore`，可随时整目录删除。

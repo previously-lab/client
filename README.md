@@ -11,6 +11,8 @@ Previously 的本地客户端：同一内核的本地实例 + 本地感知末梢
 
 ## Development
 
+发布流程见 `docs/release-process.md`（两条 tag 流水线：先发内核 `previously-kernel`，再发 client；需要 `NPM_TOKEN` secret）。
+
 Requirements: Node.js ≥ 20, pnpm.
 
 ```bash

@@ -19,6 +19,12 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      # TEMPORARY (pre-release): pnpm-workspace.yaml pins previously-kernel to
+      # a local path that only exists on maintainer machines. Strip it in CI
+      # and skip the frozen lockfile until previously-kernel is published and
+      # the override file is removed from the repo (then restore
+      # `pnpm install --frozen-lockfile`).
+      - run: rm -f pnpm-workspace.yaml
+      - run: pnpm install --no-frozen-lockfile
       - run: pnpm build
       - run: pnpm test

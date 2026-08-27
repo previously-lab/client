@@ -1,0 +1,83 @@
+name: release
+
+# Publishes `previously-client` to npm whenever a version tag (v*) is pushed.
+#
+# Ordering contract (design §10): the pinned `previously-kernel` version must
+# already be on npm — release the kernel (agent repo tag) FIRST, then tag the
+# client. The "Verify pinned kernel is on npm" step enforces this with a clear
+# error instead of a cryptic install failure.
+#
+# REQUIRED SECRET: configure `NPM_TOKEN` (npm automation token with publish
+# rights on previously-client) in the repository settings.
+#
+# The upstream-only guard keeps forks from publishing on accidental tags.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    if: github.repository == 'previously-lab/client'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm --provenance attestation
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      # TEMPORARY (pre-release): pnpm-workspace.yaml pins previously-kernel to
+      # a local path while the kernel package is unpublished. Releases must
+      # resolve it from the registry, so the override is stripped here. Once
+      # previously-kernel is on npm, delete pnpm-workspace.yaml from the repo
+      # and drop this step (and restore --frozen-lockfile below).
+      - name: Strip temporary local-kernel override
+        run: rm -f pnpm-workspace.yaml
+
+      - name: Verify release consistency
+        run: node scripts/check-release.mjs "${GITHUB_REF_NAME}"
+
+      - name: Verify pinned kernel is on npm
+        run: |
+          PINNED=$(node -p "require('./package.json').previously.kernelVersion")
+          if ! npm view "previously-kernel@$PINNED" version >/dev/null 2>&1; then
+            echo "previously-kernel@$PINNED is not on npm yet."
+            echo "Release order: tag the agent repo first (release-kernel.yml publishes the kernel), then tag the client."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+      - name: Pack tarball
+        run: npm pack --ignore-scripts
+
+      - name: Smoke test — global install, CLI answers, kernel installs from dependency
+        run: |
+          SMOKE_HOME="$(mktemp -d)"
+          PREFIX="$(mktemp -d)"
+          npm i -g "$PWD"/previously-client-*.tgz --prefix "$PREFIX"
+          "$PREFIX/bin/previously" --version
+          PREVIOUSLY_HOME="$SMOKE_HOME" "$PREFIX/bin/previously" kernel install
+          PREVIOUSLY_HOME="$SMOKE_HOME" "$PREFIX/bin/previously" kernel current
+
+      - name: Publish previously-client to npm
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
