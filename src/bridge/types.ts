@@ -23,8 +23,9 @@ export interface BridgeTask {
   context?: string | null;
   /**
    * Wire protocol version. Absent: raw result text on stdout (v1). 2: NDJSON
-   * envelope — live `{"event":...}` tool-event lines and (claude only)
-   * advisory `{"delta":...}` answer-text chunks, followed by a final
+   * envelope — live `{"event":...}` tool-event lines and advisory
+   * `{"delta":...}` text chunks (claude streams token-level; codex/kimi
+   * derive housekeeping-phase narration only), followed by a final
    * `{"protocol":2,"result":...,"events":[...]}` line. The envelope remains
    * the source of truth; deltas are presentation-only and may be discarded.
    */
@@ -86,10 +87,13 @@ export interface DispatchOptions {
    */
   onEvent?: (event: BridgeToolEvent) => void;
   /**
-   * Live answer-text delta sink (protocol 2, claude adapter only): called with
-   * each text chunk as the CLI streams its answer. Advisory presentation only
-   * — the final result string stays the source of truth. Absent sink = no
-   * deltas are derived (codex/kimi never produce any).
+   * Live answer-text delta sink (protocol 2): called with each text chunk as
+   * the CLI streams. The claude adapter streams token-level answer partials
+   * (chat) and thinking/narration (housekeeping); codex/kimi have no
+   * token-level stream, so they derive housekeeping narration only (codex:
+   * reasoning items; kimi: intermediate prose messages — the JSON report is
+   * always suppressed). Advisory presentation only — the final result string
+   * stays the source of truth. Absent sink = no deltas are derived.
    */
   onDelta?: (text: string) => void;
   /** Per-agent tuning from config.agents (model / effort flags). */

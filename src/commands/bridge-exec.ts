@@ -26,8 +26,10 @@ import { materializeBridgeWorkspace } from '../lib/skills.js';
  *            "skills"?: { <name>: <markdown text> }}                     (JSON)
  *   stdout: protocol absent — the adapter's final result text (raw, no framing)
  *           protocol 2      — NDJSON: one {"event":{name,summary,status}} line
- *           per tool event and (claude only) advisory {"delta":<text chunk>}
- *           lines as the answer streams, then a final
+ *           per tool event and advisory {"delta":<text chunk>} lines as the
+ *           answer streams (claude: token-level chat partials + housekeeping
+ *           narration; codex/kimi: housekeeping narration only, derived from
+ *           reasoning/prose lines — no token-level stream exists), then a final
  *           {"protocol":2,"result":<text>,"events":[...]} line. The envelope
  *           stays the source of truth; deltas may be discarded by consumers.
  *   exit:   0 on success; 1 on adapter failure; 2 on usage errors

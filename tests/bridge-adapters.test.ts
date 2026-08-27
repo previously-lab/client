@@ -2,8 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { claudeAdapter, createClaudeDeltaDeriver, createClaudeToolEventDeriver, deltaFromClaudeEvent, extractClaudeResult } from '../src/bridge/claude.js';
-import { codexAdapter, deriveCodexToolEvents, extractCodexResult } from '../src/bridge/codex.js';
-import { createKimiToolEventDeriver, extractKimiResult, kimiAdapter } from '../src/bridge/kimi.js';
+import { codexAdapter, createCodexDeltaDeriver, deriveCodexToolEvents, extractCodexResult } from '../src/bridge/codex.js';
+import { createKimiDeltaDeriver, createKimiToolEventDeriver, extractKimiResult, kimiAdapter } from '../src/bridge/kimi.js';
 import { checkCliPresence, resolveTimeoutMs, splitCommand } from '../src/bridge/runner.js';
 import { BridgeError } from '../src/bridge/types.js';
 import { cleanupTempHome, useTempHome } from './helpers.js';
@@ -276,6 +276,42 @@ describe('bridge adapters', () => {
       // Plain assistant speech and meta lines degrade to no events.
       expect(derive({ role: 'assistant', content: 'answer' })).toEqual([]);
       expect(derive({ role: 'meta', type: 'system.version' })).toEqual([]);
+    });
+
+    it('kimi: housekeeping narration deltas — prose narrates, the JSON report is suppressed', () => {
+      const derive = createKimiDeltaDeriver('housekeeping');
+      expect(derive({ role: 'assistant', content: 'Reviewing the slice' })).toBe('Reviewing the slice');
+      // The final report line (and a fenced variant) must never narrate.
+      expect(derive({ role: 'assistant', content: '{"memory_worthy":true}' })).toBeNull();
+      expect(derive({ role: 'assistant', content: '  ```json\n{}\n```' })).toBeNull();
+      // Tool-call lines and meta lines carry no narration.
+      expect(
+        derive({
+          role: 'assistant',
+          tool_calls: [{ type: 'function', id: 't1', function: { name: 'Read', arguments: '{}' } }],
+        }),
+      ).toBeNull();
+      expect(derive({ role: 'meta', type: 'system.version' })).toBeNull();
+    });
+
+    it('kimi: no deltas outside the housekeeping phase (no token stream to relay)', () => {
+      expect(createKimiDeltaDeriver('chat')({ role: 'assistant', content: 'answer' })).toBeNull();
+      expect(createKimiDeltaDeriver()({ role: 'assistant', content: 'answer' })).toBeNull();
+    });
+
+    it('codex: housekeeping narration from reasoning items only', () => {
+      const derive = createCodexDeltaDeriver('housekeeping');
+      expect(
+        derive({ type: 'item.completed', item: { type: 'reasoning', text: 'checking the timeline' } }),
+      ).toBe('checking the timeline');
+      // agent_message (the report lives here) and tool items never narrate.
+      expect(derive({ type: 'item.completed', item: { type: 'agent_message', text: '{"report":1}' } })).toBeNull();
+      expect(derive({ type: 'item.completed', item: { type: 'command_execution', command: 'ls' } })).toBeNull();
+      expect(derive({ type: 'item.started', item: { type: 'reasoning', text: 'x' } })).toBeNull();
+      // Chat phase: codex has no token stream — nothing to relay.
+      expect(
+        createCodexDeltaDeriver('chat')({ type: 'item.completed', item: { type: 'reasoning', text: 'x' } }),
+      ).toBeNull();
     });
   });
 

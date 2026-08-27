@@ -1,5 +1,5 @@
 import { buildPrompt, resolveCommandArgv, runNdjsonAdapter, summarizeToolInput, textFromContent } from './runner.js';
-import type { BridgeAdapter, BridgeTask, BridgeToolEvent, DispatchOptions } from './types.js';
+import type { BridgeAdapter, BridgePhase, BridgeTask, BridgeToolEvent, DispatchOptions } from './types.js';
 
 /**
  * Kimi Code adapter: `kimi -p "<prompt>" --output-format stream-json`.
@@ -75,6 +75,29 @@ export function createKimiToolEventDeriver(): (event: unknown) => BridgeToolEven
   };
 }
 
+/**
+ * Delta deriver (protocol 2), housekeeping phase only: kimi's stream-json
+ * emits COMPLETE assistant lines, never token-level partials (verified against
+ * kimi 0.38.0 — one `{"role":"assistant","content":"…"}` per message), so the
+ * chat path has nothing worth streaming (the line lands when the process is
+ * essentially done). In housekeeping the intermediate prose messages make good
+ * live narration for the wait card; the final JSON report line is suppressed
+ * by the same first-char rule as the claude adapter (`{`/fence → machine
+ * output, never narration). Tool-call lines carry no narration.
+ */
+export function createKimiDeltaDeriver(phase?: BridgePhase): (event: unknown) => string | null {
+  return (event) => {
+    if (phase !== 'housekeeping') return null;
+    if (!isRecord(event) || event.role !== 'assistant') return null;
+    if (Array.isArray(event.tool_calls)) return null;
+    const text = textFromContent(event.content);
+    if (text.trim().length === 0) return null;
+    const first = text.trimStart()[0];
+    if (first === '{' || first === '`') return null;
+    return text;
+  };
+}
+
 export const kimiAdapter: BridgeAdapter = {
   agent: 'kimi',
   dispatch(task: BridgeTask, opts: DispatchOptions): Promise<string> {
@@ -82,6 +105,7 @@ export const kimiAdapter: BridgeAdapter = {
     const args = [...argv.slice(1), '-p', buildPrompt(task), '--output-format', 'stream-json'];
     if (opts.tuning?.model !== undefined) args.push('-m', opts.tuning.model);
     const derive = createKimiToolEventDeriver();
+    const deriveDelta = opts.onDelta === undefined ? undefined : createKimiDeltaDeriver(task.phase);
     return runNdjsonAdapter(
       'kimi',
       [argv[0] ?? 'kimi', ...args],
@@ -91,10 +115,16 @@ export const kimiAdapter: BridgeAdapter = {
         signal: opts.signal,
         cwd: opts.cwd,
         onNdjsonEvent:
-          opts.onEvent === undefined
+          opts.onEvent === undefined && deriveDelta === undefined
             ? undefined
             : (event) => {
-                for (const te of derive(event)) opts.onEvent!(te);
+                if (opts.onEvent !== undefined) {
+                  for (const te of derive(event)) opts.onEvent(te);
+                }
+                if (deriveDelta !== undefined && opts.onDelta !== undefined) {
+                  const delta = deriveDelta(event);
+                  if (delta !== null) opts.onDelta(delta);
+                }
               },
       },
       extractKimiResult,

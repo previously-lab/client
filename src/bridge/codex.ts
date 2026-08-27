@@ -1,5 +1,5 @@
 import { buildPrompt, resolveCommandArgv, runNdjsonAdapter, summarizeToolInput } from './runner.js';
-import { BridgeError, type BridgeAdapter, type BridgeTask, type BridgeToolEvent, type DispatchOptions } from './types.js';
+import { BridgeError, type BridgeAdapter, type BridgePhase, type BridgeTask, type BridgeToolEvent, type DispatchOptions } from './types.js';
 
 /**
  * Codex adapter: `codex exec --json "<prompt>"`, result text from the NDJSON
@@ -66,6 +66,33 @@ export function deriveCodexToolEvents(event: unknown): BridgeToolEvent[] {
   return [{ name: itemType, summary: summarizeToolInput(itemType, event.item), status }];
 }
 
+/**
+ * Delta deriver (protocol 2), housekeeping phase only: `codex exec --json` has
+ * no token-level text stream (agent speech arrives complete at item.completed),
+ * so the chat path has nothing worth streaming. Reasoning items make good live
+ * narration for the housekeeping wait card; agent_message items are never
+ * narrated — the final one is the machine JSON report and intermediate ones
+ * would read as half-answers.
+ * Same unverified-on-this-machine footing as the rest of the adapter (no codex
+ * binary installed) — fixture-test covered.
+ */
+export function createCodexDeltaDeriver(phase?: BridgePhase): (event: unknown) => string | null {
+  return (event) => {
+    if (phase !== 'housekeeping' || !isRecord(event)) return null;
+    if (event.type === 'item.completed' && isRecord(event.item)) {
+      const itemType = event.item.type ?? event.item.item_type;
+      if (
+        itemType === 'reasoning' &&
+        typeof event.item.text === 'string' &&
+        event.item.text.trim().length > 0
+      ) {
+        return event.item.text;
+      }
+    }
+    return null;
+  };
+}
+
 export const codexAdapter: BridgeAdapter = {
   agent: 'codex',
   dispatch(task: BridgeTask, opts: DispatchOptions): Promise<string> {
@@ -74,6 +101,7 @@ export const codexAdapter: BridgeAdapter = {
     if (opts.tuning?.model !== undefined) args.push('-m', opts.tuning.model);
     if (opts.tuning?.effort !== undefined) args.push('-c', `model_reasoning_effort=${opts.tuning.effort}`);
     args.push(buildPrompt(task));
+    const deriveDelta = opts.onDelta === undefined ? undefined : createCodexDeltaDeriver(task.phase);
     return runNdjsonAdapter(
       'codex',
       [argv[0] ?? 'codex', ...args],
@@ -83,10 +111,16 @@ export const codexAdapter: BridgeAdapter = {
         signal: opts.signal,
         cwd: opts.cwd,
         onNdjsonEvent:
-          opts.onEvent === undefined
+          opts.onEvent === undefined && deriveDelta === undefined
             ? undefined
             : (event) => {
-                for (const te of deriveCodexToolEvents(event)) opts.onEvent!(te);
+                if (opts.onEvent !== undefined) {
+                  for (const te of deriveCodexToolEvents(event)) opts.onEvent(te);
+                }
+                if (deriveDelta !== undefined && opts.onDelta !== undefined) {
+                  const delta = deriveDelta(event);
+                  if (delta !== null) opts.onDelta(delta);
+                }
               },
       },
       extractCodexResult,
