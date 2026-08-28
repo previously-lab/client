@@ -65,7 +65,7 @@ describe('kernel supply chain', () => {
   it('install refuses a kernel off the pinned version, pointer untouched', () => {
     const src = makeSourceDir(home, 'c');
     expect(() => installFromDir({ fromDir: src, version: '0.9.1' })).toThrow(
-      /npm i -g previously-client@latest/,
+      /npm i -g @previously-lab\/client@latest/,
     );
     expect(readCurrentPointer()).toBeNull();
     expect(listInstalledVersions()).toEqual([]);
@@ -201,7 +201,7 @@ describe('start/status with the kernel pointer', () => {
     expect(await start([], { healthTimeoutMs: 5_000, startScribe: false })).toBe(1);
     const message = stderr.join('\n');
     expect(message).toContain('0.10.0');
-    expect(message).toContain('npm i -g previously-client@latest');
+    expect(message).toContain('npm i -g @previously-lab/client@latest');
     expect(message).not.toContain('previously upgrade');
     expect(existsSync(paths.pidPath)).toBe(false);
   });
@@ -219,6 +219,6 @@ describe('start/status with the kernel pointer', () => {
 
     expect(await status([])).toBe(1);
     expect(stdout.join('\n')).toContain('INCOMPATIBLE');
-    expect(stderr.join('\n')).toContain('npm i -g previously-client@latest');
+    expect(stderr.join('\n')).toContain('npm i -g @previously-lab/client@latest');
   });
 });

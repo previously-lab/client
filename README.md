@@ -8,7 +8,7 @@ with your memory in a plain folder you own.
 ## What it does
 
 - **Runs the Previously kernel locally** — the prebuilt
-  [`previously-kernel`](https://www.npmjs.com/package/previously-kernel)
+  [`@previously-lab/kernel`](https://www.npmjs.com/package/@previously-lab/kernel)
   package, exact-version pinned. No build tools, no git required.
 - **Your memory is a local git repository** — plain Markdown time slices under
   `~/Documents/Previously`, committed on the same cadence as the cloud
@@ -23,7 +23,7 @@ with your memory in a plain folder you own.
 ## Quick start
 
 ```bash
-npm i -g previously-client
+npm i -g @previously-lab/client
 previously     # first run: guided setup. Later: status dashboard.
 ```
 

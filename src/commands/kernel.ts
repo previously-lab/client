@@ -15,7 +15,7 @@ import { bold, cmd, emph, err as errText, green, info, muted, ok, styleHelp } fr
 export interface KernelCommandDeps {
   /** Shell-out seam for tests (repo builds); defaults to real spawnSync-based exec. */
   exec?: ExecFn;
-  /** previously-kernel dependency resolver seam for tests; defaults to require.resolve. */
+  /** @previously-lab/kernel dependency resolver seam for tests; defaults to require.resolve. */
   resolvePackageRoot?: KernelPackageResolver;
 }
 
@@ -26,7 +26,7 @@ Usage: previously kernel <subcommand>
 
 Subcommands:
   install   Install the pinned kernel version and switch to it
-            (default)                          install from the pinned previously-kernel npm
+            (default)                          install from the pinned @previously-lab/kernel npm
                                                dependency — zero build tools needed; the kernel
                                                version is the dependency's package version
                                                (--version is only used together with --from)
@@ -118,17 +118,17 @@ function install(args: string[], deps: KernelCommandDeps): number {
     return 0;
   }
 
-  // Default path: install from the pinned previously-kernel npm dependency.
+  // Default path: install from the pinned @previously-lab/kernel npm dependency.
   // The version is pinned by that dependency; --version only makes sense with --from.
   if (values.version !== undefined) {
     console.error(errText(
       '--version is only used together with --from. The default install takes the kernel ' +
-        'version pinned by the previously-kernel dependency.',
+        'version pinned by the @previously-lab/kernel dependency.',
     ));
     return 1;
   }
   const { pointer } = installFromDependency({ resolvePackageRoot: deps.resolvePackageRoot });
-  console.log(ok(`Installed kernel ${pointer.version} from the pinned ${emph('previously-kernel')} dependency`));
+  console.log(ok(`Installed kernel ${pointer.version} from the pinned ${emph('@previously-lab/kernel')} dependency`));
   console.log(`Current kernel is now ${bold(pointer.version)} (${emph(pointer.dir)})`);
   return 0;
 }

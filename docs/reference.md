@@ -18,7 +18,7 @@ Previously 的本地客户端：同一内核的本地实例 + 本地感知末梢
 ## 快速开始
 
 ```bash
-npm i -g previously-client   # 或 npx
+npm i -g @previously-lab/client   # 或 npx
 previously                   # 唯一需要记住的命令
 ```
 
@@ -36,7 +36,7 @@ config.json 契约（与 agent 仓库严格对齐；`previously init` 只写最�
 
 完整命令清单：`（裸命令：初始化/状态面板）`、`init`、`start`、`stop`、`status`、`logs`、`open`、`kernel`、`install`、`uninstall`、`watch`、`scribe`、`ingest`、`bridge-exec`，以及供被桥接 agent 使用的只读命令（`readslice`、`timeline`、`strands`、`card`、`slicesummary`、`agentlog`）。
 
-内核供应链（设计文档 §10）：`previously kernel install` 默认从 client 钉死的 npm 依赖 `previously-kernel` 安装预构建 standalone 产物——用户机器零构建、不需要 git/pnpm，安装到 `~/.previously/kernel/versions/<version>/`，原子切换 `kernel/current.json` 指针。版本策略：精确绑定——client 钉死一个确切内核版本（package.json `previously.kernelVersion` 与 `dependencies["previously-kernel"]`，当前 `0.9.0`），内核版本必须完全相等，patch 也不例外；升级 = 升级 client 包本身（不再有 `previously upgrade` / `kernel rollback`）。逃逸与开发者通道：`previously kernel install --from <dir> --version <x.y.z>` 直接把本地 standalone 目录当作已构建产物安装；`previously kernel install --repo [git-url]` 从 agent 仓库浅克隆钉死 tag 并本机构建（开发者用，需要 git + pnpm）。`start`/`status` 经指针解析内核目录并做兼容校验；config `kernelDir` 为显式覆盖。
+内核供应链（设计文档 §10）：`previously kernel install` 默认从 client 钉死的 npm 依赖 `@previously-lab/kernel` 安装预构建 standalone 产物——用户机器零构建、不需要 git/pnpm，安装到 `~/.previously/kernel/versions/<version>/`，原子切换 `kernel/current.json` 指针。版本策略：精确绑定——client 钉死一个确切内核版本（package.json `previously.kernelVersion` 与 `dependencies["@previously-lab/kernel"]`，当前 `0.9.0`），内核版本必须完全相等，patch 也不例外；升级 = 升级 client 包本身（不再有 `previously upgrade` / `kernel rollback`）。逃逸与开发者通道：`previously kernel install --from <dir> --version <x.y.z>` 直接把本地 standalone 目录当作已构建产物安装；`previously kernel install --repo [git-url]` 从 agent 仓库浅克隆钉死 tag 并本机构建（开发者用，需要 git + pnpm）。`start`/`status` 经指针解析内核目录并做兼容校验；config `kernelDir` 为显式覆盖。
 
 仅 `--repo` 通道要求 `git` 和 `pnpm` on PATH（shell-outs via `node:child_process`）；默认依赖安装无任何外部工具要求。未安装任何内核时，`start` 回退到手工放置在 `~/.previously/kernel/` 的 standalone 构建，都没有则报错并给出可执行的修复指引。
 

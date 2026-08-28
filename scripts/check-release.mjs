@@ -6,7 +6,7 @@
  *
  * Checks:
  *  1. package.json "version" matches the pushed tag.
- *  2. previously.kernelVersion matches dependencies["previously-kernel"]
+ *  2. previously.kernelVersion matches dependencies["@previously-lab/kernel"]
  *     (the exact 1:1 binding from design §10.2).
  *  3. All versions are valid semver.
  *
@@ -34,15 +34,15 @@ if (pkg.version !== tagVersion) {
 for (const [label, v] of [
   ["package.json version", pkg.version],
   ["previously.kernelVersion", pkg.previously?.kernelVersion],
-  ['dependencies["previously-kernel"]', pkg.dependencies?.["previously-kernel"]],
+  ['dependencies["@previously-lab/kernel"]', pkg.dependencies?.["@previously-lab/kernel"]],
 ]) {
   if (typeof v !== "string" || !semver.test(v)) failures.push(`${label} is missing or not semver: ${JSON.stringify(v)}`);
 }
 const pinned = pkg.previously?.kernelVersion;
-const dep = pkg.dependencies?.["previously-kernel"];
+const dep = pkg.dependencies?.["@previously-lab/kernel"];
 if (pinned && dep && pinned !== dep) {
   failures.push(
-    `kernel pin mismatch: previously.kernelVersion is "${pinned}" but dependencies["previously-kernel"] is "${dep}" — they must be exactly equal (design §10.2).`
+    `kernel pin mismatch: previously.kernelVersion is "${pinned}" but dependencies["@previously-lab/kernel"] is "${dep}" — they must be exactly equal (design §10.2).`
   );
 }
 
@@ -51,4 +51,4 @@ if (failures.length > 0) {
   for (const f of failures) console.error(`  - ${f}`);
   process.exit(1);
 }
-console.log(`release check OK: previously-client@${pkg.version} with previously-kernel@${pinned} (tag ${tag})`);
+console.log(`release check OK: @previously-lab/client@${pkg.version} with @previously-lab/kernel@${pinned} (tag ${tag})`);

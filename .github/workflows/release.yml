@@ -1,14 +1,15 @@
 name: release
 
-# Publishes `previously-client` to npm whenever a version tag (v*) is pushed.
+# Publishes `@previously-lab/client` to npm whenever a version tag (v*) is
+# pushed.
 #
-# Ordering contract (design §10): the pinned `previously-kernel` version must
-# already be on npm — release the kernel (agent repo tag) FIRST, then tag the
-# client. The "Verify pinned kernel is on npm" step enforces this with a clear
-# error instead of a cryptic install failure.
+# Ordering contract (design §10): the pinned `@previously-lab/kernel` version
+# must already be on npm — release the kernel (agent repo tag) FIRST, then tag
+# the client. The "Verify pinned kernel is on npm" step enforces this with a
+# clear error instead of a cryptic install failure.
 #
 # REQUIRED SECRET: configure `NPM_TOKEN` (npm automation token with publish
-# rights on previously-client) in the repository settings.
+# rights on @previously-lab/client) in the repository settings.
 #
 # The upstream-only guard keeps forks from publishing on accidental tags.
 
@@ -36,11 +37,11 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
-      # TEMPORARY (pre-release): pnpm-workspace.yaml pins previously-kernel to
-      # a local path while the kernel package is unpublished. Releases must
+      # TEMPORARY (pre-release): pnpm-workspace.yaml pins @previously-lab/kernel
+      # to a local path while the kernel package is unpublished. Releases must
       # resolve it from the registry, so the override is stripped here. Once
-      # previously-kernel is on npm, delete pnpm-workspace.yaml from the repo
-      # and drop this step (and restore --frozen-lockfile below).
+      # @previously-lab/kernel is on npm, delete pnpm-workspace.yaml from the
+      # repo and drop this step (and restore --frozen-lockfile below).
       - name: Strip temporary local-kernel override
         run: rm -f pnpm-workspace.yaml
 
@@ -50,8 +51,8 @@ jobs:
       - name: Verify pinned kernel is on npm
         run: |
           PINNED=$(node -p "require('./package.json').previously.kernelVersion")
-          if ! npm view "previously-kernel@$PINNED" version >/dev/null 2>&1; then
-            echo "previously-kernel@$PINNED is not on npm yet."
+          if ! npm view "@previously-lab/kernel@$PINNED" version >/dev/null 2>&1; then
+            echo "@previously-lab/kernel@$PINNED is not on npm yet."
             echo "Release order: tag the agent repo first (release-kernel.yml publishes the kernel), then tag the client."
             exit 1
           fi
@@ -72,12 +73,22 @@ jobs:
         run: |
           SMOKE_HOME="$(mktemp -d)"
           PREFIX="$(mktemp -d)"
-          npm i -g "$PWD"/previously-client-*.tgz --prefix "$PREFIX"
+          npm i -g "$PWD"/previously-lab-client-*.tgz --prefix "$PREFIX"
           "$PREFIX/bin/previously" --version
           PREVIOUSLY_HOME="$SMOKE_HOME" "$PREFIX/bin/previously" kernel install
           PREVIOUSLY_HOME="$SMOKE_HOME" "$PREFIX/bin/previously" kernel current
 
-      - name: Publish previously-client to npm
-        run: npm publish --access public --provenance
+      - name: Publish @previously-lab/client to npm
+        # Derive the dist-tag from the tag version: a prerelease version
+        # (0.9.0-preview.0) publishes under its first prerelease identifier
+        # (preview); stable versions go to latest.
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          DIST_TAG="latest"
+          if [[ "$VERSION" == *-* ]]; then
+            DIST_TAG="${VERSION#*-}"; DIST_TAG="${DIST_TAG%%.*}"
+          fi
+          echo "Publishing $VERSION with dist-tag: $DIST_TAG"
+          npm publish --access public --provenance --tag "$DIST_TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

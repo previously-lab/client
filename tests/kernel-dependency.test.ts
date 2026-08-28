@@ -12,17 +12,17 @@ import {
 import { resolvePaths } from '../src/lib/paths.js';
 import { cleanupTempHome, useTempHome, writeStandaloneFixture } from './helpers.js';
 
-/** Build a fake previously-kernel npm package: package.json + a minimal standalone/ tree. */
+/** Build a fake @previously-lab/kernel npm package: package.json + a minimal standalone/ tree. */
 function makeKernelPackage(
   home: string,
   version: string,
   opts: { withStandalone?: boolean } = {},
 ): string {
-  const root = join(home, 'fake-node-modules', 'previously-kernel');
+  const root = join(home, 'fake-node-modules', '@previously-lab', 'kernel');
   mkdirSync(root, { recursive: true });
   writeFileSync(
     join(root, 'package.json'),
-    JSON.stringify({ name: 'previously-kernel', version }, null, 2) + '\n',
+    JSON.stringify({ name: '@previously-lab/kernel', version }, null, 2) + '\n',
     'utf8',
   );
   if (opts.withStandalone ?? true) {
@@ -31,7 +31,7 @@ function makeKernelPackage(
   return root;
 }
 
-describe('kernel install from the previously-kernel dependency', () => {
+describe('kernel install from the @previously-lab/kernel dependency', () => {
   let home: string;
   let stderr: string[];
   let stdout: string[];
@@ -62,19 +62,19 @@ describe('kernel install from the previously-kernel dependency', () => {
     expect(listInstalledVersions(paths)).toEqual(['0.9.0']);
   });
 
-  it('a missing previously-kernel dependency fails with an actionable message', () => {
-    // The dev workspace installs previously-kernel via a pnpm override
+  it('a missing @previously-lab/kernel dependency fails with an actionable message', () => {
+    // The dev workspace installs @previously-lab/kernel via a pnpm override
     // (pnpm-workspace.yaml — it is not published to npm yet), so the global
     // "package is absent" premise no longer holds here; simulate the missing
     // dependency through the resolver seam instead.
     const missing: KernelPackageResolver = () => {
       throw new Error(
-        'The previously-kernel package is not installed — your previously-client ' +
-          'install looks incomplete. Reinstall the client (`npm i -g previously-client`), ' +
+        'The @previously-lab/kernel package is not installed — your @previously-lab/client ' +
+          'install looks incomplete. Reinstall the client (`npm i -g @previously-lab/client`), ' +
           'or install the kernel from a local artifact (`--from <dir>`) or from source (`--repo`).',
       );
     };
-    expect(() => installFromDependency({ resolvePackageRoot: missing })).toThrow(/npm i -g previously-client/);
+    expect(() => installFromDependency({ resolvePackageRoot: missing })).toThrow(/npm i -g @previously-lab\/client/);
     expect(() => installFromDependency({ resolvePackageRoot: missing })).toThrow(/--from/);
     expect(readCurrentPointer()).toBeNull();
   });
@@ -82,7 +82,7 @@ describe('kernel install from the previously-kernel dependency', () => {
   it('an off-pin dependency version is refused and the pointer is untouched', () => {
     const root = makeKernelPackage(home, '0.9.1');
     expect(() => installFromDependency({ resolvePackageRoot: () => root })).toThrow(
-      /npm i -g previously-client@latest/,
+      /npm i -g @previously-lab\/client@latest/,
     );
     expect(readCurrentPointer()).toBeNull();
     expect(listInstalledVersions()).toEqual([]);
@@ -92,7 +92,7 @@ describe('kernel install from the previously-kernel dependency', () => {
     const root = makeKernelPackage(home, '0.9.0', { withStandalone: false });
     expect(() => installFromDependency({ resolvePackageRoot: () => root })).toThrow(/standalone/);
     expect(() => installFromDependency({ resolvePackageRoot: () => root })).toThrow(
-      /npm i -g previously-client/,
+      /npm i -g @previously-lab\/client/,
     );
     expect(readCurrentPointer()).toBeNull();
   });
@@ -117,20 +117,20 @@ describe('kernel install from the previously-kernel dependency', () => {
     expect(await kernelCmd(['install'], { resolvePackageRoot: () => root })).toBe(0);
     const out = stdout.join('\n');
     expect(out).toContain('Installed kernel 0.9.0');
-    expect(out).toContain('previously-kernel');
+    expect(out).toContain('@previously-lab/kernel');
     expect(readCurrentPointer()?.version).toBe('0.9.0');
   });
 
   it('kernel install surfaces a missing dependency as a clean error, exit 1', async () => {
     const missing: KernelPackageResolver = () => {
       throw new Error(
-        'The previously-kernel package is not installed — your previously-client ' +
-          'install looks incomplete. Reinstall the client (`npm i -g previously-client`), ' +
+        'The @previously-lab/kernel package is not installed — your @previously-lab/client ' +
+          'install looks incomplete. Reinstall the client (`npm i -g @previously-lab/client`), ' +
           'or install the kernel from a local artifact (`--from <dir>`) or from source (`--repo`).',
       );
     };
     expect(await kernelCmd(['install'], { resolvePackageRoot: missing })).toBe(1);
-    expect(stderr.join('\n')).toContain('npm i -g previously-client');
+    expect(stderr.join('\n')).toContain('npm i -g @previously-lab/client');
     expect(readCurrentPointer()).toBeNull();
   });
 
@@ -141,7 +141,7 @@ describe('kernel install from the previously-kernel dependency', () => {
     ).toBe(1);
     const message = stderr.join('\n');
     expect(message).toContain('--version');
-    expect(message).toContain('previously-kernel');
+    expect(message).toContain('@previously-lab/kernel');
     expect(readCurrentPointer()).toBeNull();
   });
 

@@ -62,7 +62,7 @@ export function checkCompat(
     message:
       `Kernel ${formatSemver(v)} does not match the version this client is pinned to ` +
       `(${pinned}). Client and kernel ship in lockstep: upgrade the client package ` +
-      `(\`npm i -g previously-client@latest\`) to match your kernel, or reinstall the ` +
+      `(\`npm i -g @previously-lab/client@latest\`) to match your kernel, or reinstall the ` +
       `pinned kernel with \`previously kernel install\`.`,
   };
 }

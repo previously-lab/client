@@ -221,13 +221,13 @@ export function installFromDir(opts: InstallFromDirOptions): InstallResult {
 }
 
 /** The npm package that ships the kernel standalone artifact (design doc §10.1 v5). */
-export const KERNEL_PACKAGE_NAME = 'previously-kernel';
+export const KERNEL_PACKAGE_NAME = '@previously-lab/kernel';
 
-/** Resolves the root dir of the installed previously-kernel package (test seam). */
+/** Resolves the root dir of the installed @previously-lab/kernel package (test seam). */
 export type KernelPackageResolver = () => string;
 
 /**
- * Default resolver: locate the bundled previously-kernel npm package via
+ * Default resolver: locate the bundled @previously-lab/kernel npm package via
  * Node's module resolution, starting from this file (which ships inside the
  * client's dist/). Throws an actionable error when the dependency is missing
  * (a partial/broken client install).
@@ -238,8 +238,8 @@ export function defaultKernelPackageRoot(): string {
     return dirname(require.resolve(`${KERNEL_PACKAGE_NAME}/package.json`));
   } catch {
     throw new Error(
-      `The ${KERNEL_PACKAGE_NAME} package is not installed — your previously-client ` +
-        `install looks incomplete. Reinstall the client (\`npm i -g previously-client\`), ` +
+      `The ${KERNEL_PACKAGE_NAME} package is not installed — your @previously-lab/client ` +
+        `install looks incomplete. Reinstall the client (\`npm i -g @previously-lab/client\`), ` +
         `or install the kernel from a local artifact (\`--from <dir>\`) or from source (\`--repo\`).`,
     );
   }
@@ -255,7 +255,7 @@ export interface InstallFromDependencyOptions {
 
 /**
  * `previously kernel install` (default path) — install from the pinned
- * previously-kernel npm dependency. The package ships the ready-made
+ * @previously-lab/kernel npm dependency. The package ships the ready-made
  * standalone artifact at <root>/standalone/, so the user's machine needs
  * zero build tooling. The kernel version IS the dependency's package
  * version (no --version flag); it must match the client's pin exactly —
@@ -281,7 +281,7 @@ export function installFromDependency(opts: InstallFromDependencyOptions = {}): 
   if (version === null) {
     throw new Error(
       `Could not read a version (x.y.z) from ${pkgJsonPath}. The installed ${KERNEL_PACKAGE_NAME} ` +
-        `package looks broken — reinstall the client (\`npm i -g previously-client\`).`,
+        `package looks broken — reinstall the client (\`npm i -g @previously-lab/client\`).`,
     );
   }
   const compat = checkCompat(version, pinned);
@@ -291,7 +291,7 @@ export function installFromDependency(opts: InstallFromDependencyOptions = {}): 
   if (!existsSync(standaloneDir)) {
     throw new Error(
       `The installed ${KERNEL_PACKAGE_NAME} package has no standalone/ directory (${pkgRoot}). ` +
-        `Reinstall the client (\`npm i -g previously-client\`), or install the kernel from a ` +
+        `Reinstall the client (\`npm i -g @previously-lab/client\`), or install the kernel from a ` +
         `local artifact (\`--from <dir>\`) or from source (\`--repo\`).`,
     );
   }

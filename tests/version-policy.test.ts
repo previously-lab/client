@@ -47,7 +47,7 @@ describe('checkCompat (exact pin)', () => {
     const res = checkCompat('0.10.0', '0.9.0');
     expect(res.ok).toBe(false);
     expect(res.message).toContain('0.10.0');
-    expect(res.message).toContain('npm i -g previously-client@latest');
+    expect(res.message).toContain('npm i -g @previously-lab/client@latest');
     expect(res.message).not.toContain('previously upgrade');
   });
 
