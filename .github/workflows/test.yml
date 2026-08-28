@@ -24,7 +24,8 @@ jobs:
       # and skip the frozen lockfile until @previously-lab/kernel is published
       # and the override file is removed from the repo (then restore
       # `pnpm install --frozen-lockfile`).
-      - run: node -e "fs.rmSync('pnpm-workspace.yaml', { force: true })"
+      - run: |
+          node -e "fs.rmSync('pnpm-workspace.yaml', { force: true })"
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm build
       - run: pnpm test
