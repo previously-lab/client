@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,7 +11,10 @@ import { resolvePaths } from '../src/lib/paths.js';
  * Call cleanupTempHome() in afterEach.
  */
 export function useTempHome(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'previously-test-'));
+  // realpath: on Windows the temp dir may contain an 8.3 short-name component
+  // (RUNNER~1 on CI runners). fs.watch then aborts the whole process on the
+  // short/long path mismatch (libuv fs-event.c assertion), so canonicalize.
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'previously-test-')));
   process.env.PREVIOUSLY_HOME = dir;
   return dir;
 }
