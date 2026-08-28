@@ -24,6 +24,10 @@
     "prepare": "pnpm run build"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/previously-lab/client"
+  },
   "devDependencies": {
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2",
