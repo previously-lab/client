@@ -10,7 +10,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-15, ubuntu-latest]
-        node: [20, 24]
+        node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,7 @@ jobs:
       # and skip the frozen lockfile until @previously-lab/kernel is published
       # and the override file is removed from the repo (then restore
       # `pnpm install --frozen-lockfile`).
-      - run: rm -f pnpm-workspace.yaml
+      - run: node -e "fs.rmSync('pnpm-workspace.yaml', { force: true })"
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm build
       - run: pnpm test
