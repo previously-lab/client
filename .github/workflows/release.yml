@@ -31,11 +31,15 @@ jobs:
 
       - uses: pnpm/action-setup@v4
 
+      # NOTE: no `registry-url` here on purpose. setup-node would wire
+      # NODE_AUTH_TOKEN into a global .npmrc, and pnpm/npm would then send the
+      # publish token on every registry read — a granular token scoped to
+      # @previously-lab/client gets a 404 reading @previously-lab/kernel.
+      # Auth is configured in the publish step only.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org
 
       # TEMPORARY (pre-release): pnpm-workspace.yaml pins @previously-lab/kernel
       # to a local path while the kernel package is unpublished. Releases must
@@ -89,6 +93,7 @@ jobs:
             DIST_TAG="${VERSION#*-}"; DIST_TAG="${DIST_TAG%%.*}"
           fi
           echo "Publishing $VERSION with dist-tag: $DIST_TAG"
+          npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
           npm publish --access public --provenance --tag "$DIST_TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
