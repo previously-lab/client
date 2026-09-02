@@ -1,9 +1,19 @@
 # Previously Client
 
+<p>
+  <a href="https://www.npmjs.com/package/@previously-lab/client"><img alt="npm version" src="https://img.shields.io/npm/v/@previously-lab/client"></a>
+  <a href="LICENSE"><img alt="license: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <img alt="node: >=22.13" src="https://img.shields.io/badge/node-%3E%3D22.13-brightgreen">
+</p>
+
 The local client for [Previously](https://previously.ldwid.com) — an AI agent
 that remembers by *when*, not by chat thread. One npm package turns your
 machine into a full Previously instance: the same kernel, running locally,
 with your memory in a plain folder you own.
+
+<p align="center">
+  <img src="docs/assets/demo-webui.png" alt="Previously Web UI running locally" width="720">
+</p>
 
 > **Status: early preview.** The client is functional and tested, but the
 > command surface and config format may still shift between preview releases.
@@ -37,9 +47,13 @@ with your memory in a plain folder you own.
 ## Quick start
 
 ```bash
-npm i -g @previously-lab/client@preview
+npm i -g @previously-lab/client
 previously     # first run: guided setup. Later: status dashboard.
 ```
+
+<p align="center">
+  <img src="docs/assets/demo-status.svg" alt="previously status dashboard" width="720">
+</p>
 
 `previously start` launches the kernel, `previously open` opens the Web UI.
 That is all you need to remember.
@@ -60,6 +74,10 @@ management, `ingest`, `scribe once`, `install`/`uninstall` of the agent skill
 group, and the constrained reader commands bridged agents use (`readslice`,
 `timeline`, `strands`, `card`, …) — is documented in
 [`docs/reference.md`](docs/reference.md) and via `previously --help`.
+
+<p align="center">
+  <img src="docs/assets/demo-timeline.svg" alt="previously timeline — your memory, browsable from any agent" width="720">
+</p>
 
 ## How it fits together
 
@@ -86,10 +104,9 @@ browser.
 ## Updating
 
 ```bash
-npm i -g @previously-lab/client@preview
+npm i -g @previously-lab/client@latest
 ```
 
-(Once 0.9 stable ships, plain `@previously-lab/client` tracks `latest`.)
 The kernel travels as the client's pinned dependency, so there is no separate
 kernel upgrade command — and no "client and kernel versions disagree" state.
 
