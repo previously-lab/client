@@ -44,9 +44,9 @@ prerelease 标识作为 dist-tag（`0.9.0-preview.0` → `--tag preview`），�
 
 ## 临时措施清理（内核首发后做一次）
 
-- 删除本仓库根目录的 `pnpm-workspace.yaml`（它把 `@previously-lab/kernel` 解析到本地 `../Aftrbrez/dist-kernel`，仅内核未发布期间有效）。
+- ~~删除本仓库根目录的 `pnpm-workspace.yaml`~~ **已做（v0.9.2）**：内核上 npm 后本地 override 已移除，`test.yml`/`release.yml` 的 strip 步骤已删、`--frozen-lockfile` 已恢复。
+- **但文件保留**：pnpm 11 默认启用 `minimumReleaseAge: 1440`（24 小时冷静期），而 client 发布时内核总是刚发布几分钟——`pnpm-workspace.yaml` 现在只携带 `minimumReleaseAgeExclude: ['@previously-lab/kernel']`（第一方包、自家 CI 带 provenance 发布，豁免是安全的），不要再删它。
 - `pnpm install` 更新 `pnpm-lock.yaml` 并提交。
-- `.github/workflows/test.yml` 恢复 `pnpm install --frozen-lockfile`，删掉 "Strip temporary local-kernel override" 步骤；`release.yml` 同样删掉该步骤并恢复 frozen-lockfile。
 
 ## 失败排查
 

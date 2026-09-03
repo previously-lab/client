@@ -1,6 +1,6 @@
-# TEMPORARY (pre-release): @previously-lab/kernel@0.9.0 is not on npm yet, so
-# its resolution is pinned to the locally built kernel package. Remove this
-# file's `overrides` entry once @previously-lab/kernel is published. (pnpm 11
-# reads overrides from this file, not from package.json.)
-overrides:
-  "@previously-lab/kernel": link:../Aftrbrez/dist-kernel
+# Keep @previously-lab/kernel exempt from pnpm 11's default 24h
+# minimumReleaseAge: the kernel is published minutes before the client release
+# by our own CI (with provenance), so the first-party dependency would always
+# fail the freshness gate at release time. Everything else stays gated.
+minimumReleaseAgeExclude:
+  - '@previously-lab/kernel'

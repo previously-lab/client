@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   checkCompat,
@@ -27,7 +28,10 @@ describe('parseSemver', () => {
 
 describe('getPinnedKernelVersion', () => {
   it('reads previously.kernelVersion from package.json', () => {
-    expect(getPinnedKernelVersion()).toBe('0.9.0');
+    const pkg = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as { previously: { kernelVersion: string } };
+    expect(getPinnedKernelVersion()).toBe(pkg.previously.kernelVersion);
   });
 });
 
@@ -64,7 +68,7 @@ describe('checkCompat (exact pin)', () => {
   });
 
   it('defaults to the package.json pin', () => {
-    expect(checkCompat('0.9.0').ok).toBe(true);
+    expect(checkCompat(getPinnedKernelVersion()).ok).toBe(true);
     expect(checkCompat('0.8.0').ok).toBe(false);
   });
 });

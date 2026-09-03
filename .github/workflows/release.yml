@@ -41,14 +41,6 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      # TEMPORARY (pre-release): pnpm-workspace.yaml pins @previously-lab/kernel
-      # to a local path while the kernel package is unpublished. Releases must
-      # resolve it from the registry, so the override is stripped here. Once
-      # @previously-lab/kernel is on npm, delete pnpm-workspace.yaml from the
-      # repo and drop this step (and restore --frozen-lockfile below).
-      - name: Strip temporary local-kernel override
-        run: rm -f pnpm-workspace.yaml
-
       - name: Verify release consistency
         run: node scripts/check-release.mjs "${GITHUB_REF_NAME}"
 
@@ -62,7 +54,7 @@ jobs:
           fi
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm build

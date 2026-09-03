@@ -10,7 +10,13 @@ import {
   type KernelPackageResolver,
 } from '../src/lib/kernel.js';
 import { resolvePaths } from '../src/lib/paths.js';
+import { getPinnedKernelVersion } from '../src/lib/version-policy.js';
 import { cleanupTempHome, useTempHome, writeStandaloneFixture } from './helpers.js';
+
+/** The on-pin fixture version — always the version this client ships pinned to. */
+const PIN = getPinnedKernelVersion();
+/** A version that is never the pin — used for off-pin refusal tests. */
+const OFF_PIN = PIN.replace(/(\d+)$/, (p) => String(Number(p) + 1));
 
 /** Build a fake @previously-lab/kernel npm package: package.json + a minimal standalone/ tree. */
 function makeKernelPackage(
@@ -50,23 +56,22 @@ describe('kernel install from the @previously-lab/kernel dependency', () => {
   });
 
   it('installs the dependency artifact: files land, marker written, pointer flips', () => {
-    const root = makeKernelPackage(home, '0.9.0');
+    const root = makeKernelPackage(home, PIN);
     const { pointer } = installFromDependency({ resolvePackageRoot: () => root });
 
     const paths = resolvePaths();
-    expect(pointer.version).toBe('0.9.0');
-    expect(pointer.dir).toBe(join(paths.kernelVersionsDir, '0.9.0'));
+    expect(pointer.version).toBe(PIN);
+    expect(pointer.dir).toBe(join(paths.kernelVersionsDir, PIN));
     expect(existsSync(join(pointer.dir, 'server.js'))).toBe(true);
     expect(existsSync(join(pointer.dir, 'previously-kernel.json'))).toBe(true);
     expect(readCurrentPointer(paths)).toEqual(pointer);
-    expect(listInstalledVersions(paths)).toEqual(['0.9.0']);
+    expect(listInstalledVersions(paths)).toEqual([PIN]);
   });
 
   it('a missing @previously-lab/kernel dependency fails with an actionable message', () => {
-    // The dev workspace installs @previously-lab/kernel via a pnpm override
-    // (pnpm-workspace.yaml — it is not published to npm yet), so the global
-    // "package is absent" premise no longer holds here; simulate the missing
-    // dependency through the resolver seam instead.
+    // The dev workspace resolves @previously-lab/kernel from npm like any
+    // consumer, so the global "package is absent" premise no longer holds
+    // here; simulate the missing dependency through the resolver seam instead.
     const missing: KernelPackageResolver = () => {
       throw new Error(
         'The @previously-lab/kernel package is not installed — your @previously-lab/client ' +
@@ -80,7 +85,7 @@ describe('kernel install from the @previously-lab/kernel dependency', () => {
   });
 
   it('an off-pin dependency version is refused and the pointer is untouched', () => {
-    const root = makeKernelPackage(home, '0.9.1');
+    const root = makeKernelPackage(home, OFF_PIN);
     expect(() => installFromDependency({ resolvePackageRoot: () => root })).toThrow(
       /npm i -g @previously-lab\/client@latest/,
     );
@@ -89,7 +94,7 @@ describe('kernel install from the @previously-lab/kernel dependency', () => {
   });
 
   it('a dependency package without standalone/ fails honestly', () => {
-    const root = makeKernelPackage(home, '0.9.0', { withStandalone: false });
+    const root = makeKernelPackage(home, PIN, { withStandalone: false });
     expect(() => installFromDependency({ resolvePackageRoot: () => root })).toThrow(/standalone/);
     expect(() => installFromDependency({ resolvePackageRoot: () => root })).toThrow(
       /npm i -g @previously-lab\/client/,
@@ -107,18 +112,18 @@ describe('kernel install from the @previously-lab/kernel dependency', () => {
 
   it('--from regression: the escape hatch still installs a local artifact', () => {
     const src = writeStandaloneFixture(join(home, 'src-fixtures', 'from'));
-    const { pointer } = installFromDir({ fromDir: src, version: '0.9.0' });
-    expect(pointer.version).toBe('0.9.0');
+    const { pointer } = installFromDir({ fromDir: src, version: PIN });
+    expect(pointer.version).toBe(PIN);
     expect(readCurrentPointer()).toEqual(pointer);
   });
 
   it('kernel install (default) uses the dependency path', async () => {
-    const root = makeKernelPackage(home, '0.9.0');
+    const root = makeKernelPackage(home, PIN);
     expect(await kernelCmd(['install'], { resolvePackageRoot: () => root })).toBe(0);
     const out = stdout.join('\n');
-    expect(out).toContain('Installed kernel 0.9.0');
+    expect(out).toContain(`Installed kernel ${PIN}`);
     expect(out).toContain('@previously-lab/kernel');
-    expect(readCurrentPointer()?.version).toBe('0.9.0');
+    expect(readCurrentPointer()?.version).toBe(PIN);
   });
 
   it('kernel install surfaces a missing dependency as a clean error, exit 1', async () => {
@@ -135,9 +140,9 @@ describe('kernel install from the @previously-lab/kernel dependency', () => {
   });
 
   it('kernel install refuses --version on the dependency path', async () => {
-    const root = makeKernelPackage(home, '0.9.0');
+    const root = makeKernelPackage(home, PIN);
     expect(
-      await kernelCmd(['install', '--version', '0.9.0'], { resolvePackageRoot: () => root }),
+      await kernelCmd(['install', '--version', PIN], { resolvePackageRoot: () => root }),
     ).toBe(1);
     const message = stderr.join('\n');
     expect(message).toContain('--version');
@@ -147,8 +152,8 @@ describe('kernel install from the @previously-lab/kernel dependency', () => {
 
   it('kernel install --from regression at the command layer', async () => {
     const src = writeStandaloneFixture(join(home, 'src-fixtures', 'cmd-from'));
-    expect(await kernelCmd(['install', '--from', src, '--version', '0.9.0'])).toBe(0);
-    expect(stdout.join('\n')).toContain('Installed kernel 0.9.0');
-    expect(readCurrentPointer()?.version).toBe('0.9.0');
+    expect(await kernelCmd(['install', '--from', src, '--version', PIN])).toBe(0);
+    expect(stdout.join('\n')).toContain(`Installed kernel ${PIN}`);
+    expect(readCurrentPointer()?.version).toBe(PIN);
   });
 });

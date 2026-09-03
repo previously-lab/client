@@ -11,6 +11,7 @@ import {
   readCurrentPointer,
 } from '../src/lib/kernel.js';
 import { resolvePaths } from '../src/lib/paths.js';
+import { getPinnedKernelVersion } from '../src/lib/version-policy.js';
 import {
   cleanupTempHome,
   getFreePort,
@@ -18,6 +19,11 @@ import {
   writeConfigWithPort,
   writeStandaloneFixture,
 } from './helpers.js';
+
+/** The on-pin fixture version — always the version this client ships pinned to. */
+const PIN = getPinnedKernelVersion();
+/** A version that is never the pin — used for off-pin refusal tests. */
+const OFF_PIN = PIN.replace(/(\d+)$/, (p) => String(Number(p) + 1));
 
 /** Build a fixture standalone artifact as an install source (inside the sandboxed home). */
 function makeSourceDir(home: string, name: string): string {
@@ -45,15 +51,15 @@ describe('kernel supply chain', () => {
 
   it('install --from stages the artifact, writes the marker, and flips the pointer', () => {
     const src = makeSourceDir(home, 'a');
-    const { pointer } = installFromDir({ fromDir: src, version: '0.9.0' });
+    const { pointer } = installFromDir({ fromDir: src, version: PIN });
 
     const paths = resolvePaths();
-    expect(pointer.version).toBe('0.9.0');
-    expect(pointer.dir).toBe(join(paths.kernelVersionsDir, '0.9.0'));
+    expect(pointer.version).toBe(PIN);
+    expect(pointer.dir).toBe(join(paths.kernelVersionsDir, PIN));
     expect(existsSync(join(pointer.dir, 'server.js'))).toBe(true);
     expect(existsSync(join(pointer.dir, 'previously-kernel.json'))).toBe(true);
     expect(readCurrentPointer(paths)).toEqual(pointer);
-    expect(listInstalledVersions(paths)).toEqual(['0.9.0']);
+    expect(listInstalledVersions(paths)).toEqual([PIN]);
   });
 
   it('install --from requires a valid pinned version', () => {
@@ -64,7 +70,7 @@ describe('kernel supply chain', () => {
 
   it('install refuses a kernel off the pinned version, pointer untouched', () => {
     const src = makeSourceDir(home, 'c');
-    expect(() => installFromDir({ fromDir: src, version: '0.9.1' })).toThrow(
+    expect(() => installFromDir({ fromDir: src, version: OFF_PIN })).toThrow(
       /npm i -g @previously-lab\/client@latest/,
     );
     expect(readCurrentPointer()).toBeNull();
@@ -72,7 +78,7 @@ describe('kernel supply chain', () => {
   });
 
   it('install refuses a missing artifact dir honestly', () => {
-    expect(() => installFromDir({ fromDir: join(home, 'nope'), version: '0.9.0' })).toThrow(
+    expect(() => installFromDir({ fromDir: join(home, 'nope'), version: PIN })).toThrow(
       /does not exist/,
     );
     expect(readCurrentPointer()).toBeNull();
@@ -89,7 +95,7 @@ describe('kernel supply chain', () => {
 
   it('a failed install leaves the previous pointer and versions intact (atomic switch)', () => {
     const good = makeSourceDir(home, 'good');
-    installFromDir({ fromDir: good, version: '0.9.0' });
+    installFromDir({ fromDir: good, version: PIN });
     const before = readCurrentPointer();
 
     // An "artifact" without server.js fails mid-install (pinned override
@@ -100,30 +106,30 @@ describe('kernel supply chain', () => {
 
     expect(() => installFromDir({ fromDir: bad, version: '1.1.0', pinned: '1.1.0' })).toThrow(/server\.js/);
     expect(readCurrentPointer()).toEqual(before);
-    expect(listInstalledVersions()).toEqual(['0.9.0']);
+    expect(listInstalledVersions()).toEqual([PIN]);
     // No staging dirs left behind.
     expect(existsSync(join(resolvePaths().kernelVersionsDir, '.staging-1.1.0-' + process.pid))).toBe(false);
   });
 
   it('installing the same version twice is refused', () => {
     const src = makeSourceDir(home, 'dup');
-    installFromDir({ fromDir: src, version: '0.9.0' });
-    expect(() => installFromDir({ fromDir: src, version: '0.9.0' })).toThrow(/already installed/);
-    expect(readCurrentPointer()?.version).toBe('0.9.0');
+    installFromDir({ fromDir: src, version: PIN });
+    expect(() => installFromDir({ fromDir: src, version: PIN })).toThrow(/already installed/);
+    expect(readCurrentPointer()?.version).toBe(PIN);
   });
 
   it('kernel command: install --from, current, list', async () => {
     const src = makeSourceDir(home, 'cmd');
-    expect(await kernelCmd(['install', '--from', src, '--version', '0.9.0'])).toBe(0);
-    expect(stdout.join('\n')).toContain('Installed kernel 0.9.0');
+    expect(await kernelCmd(['install', '--from', src, '--version', PIN])).toBe(0);
+    expect(stdout.join('\n')).toContain(`Installed kernel ${PIN}`);
 
     stdout = [];
     expect(await kernelCmd(['current'])).toBe(0);
-    expect(stdout.join('\n')).toContain('0.9.0');
+    expect(stdout.join('\n')).toContain(PIN);
 
     stdout = [];
     expect(await kernelCmd(['list'])).toBe(0);
-    expect(stdout.join('\n')).toContain('* 0.9.0');
+    expect(stdout.join('\n')).toContain(`* ${PIN}`);
   });
 
   it('kernel command: the rollback subcommand is gone', async () => {
@@ -165,7 +171,7 @@ describe('start/status with the kernel pointer', () => {
   });
 
   it('start launches the kernel from the pointer dir; status reports version + compat', async () => {
-    installFromDir({ fromDir: makeSourceDir(home, 'run'), version: '0.9.0' });
+    installFromDir({ fromDir: makeSourceDir(home, 'run'), version: PIN });
     writeConfigWithPort(port);
     // status exits non-zero when the scribe is missing beside a live kernel;
     // run a stand-in scribe entry so the full system is healthy.
@@ -180,7 +186,7 @@ describe('start/status with the kernel pointer', () => {
     stdout = [];
     expect(await status([])).toBe(0);
     const out = stdout.join('\n');
-    expect(out).toContain('0.9.0');
+    expect(out).toContain(PIN);
     expect(out).toContain('compatible');
     expect(out).toContain('running');
 

@@ -1,6 +1,6 @@
 {
   "name": "@previously-lab/client",
-  "version": "0.9.0",
+  "version": "0.9.2",
   "description": "Previously local client: launches and manages the local Previously kernel instance.",
   "type": "module",
   "bin": {
@@ -14,7 +14,7 @@
   },
   "packageManager": "pnpm@11.10.0",
   "previously": {
-    "kernelVersion": "0.9.0"
+    "kernelVersion": "0.9.2"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -36,6 +36,6 @@
   "dependencies": {
     "chokidar": "^5.0.0",
     "isomorphic-git": "^1.41.9",
-    "@previously-lab/kernel": "0.9.0"
+    "@previously-lab/kernel": "0.9.2"
   }
 }
